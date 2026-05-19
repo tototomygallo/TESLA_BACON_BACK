@@ -41,6 +41,7 @@ async def ingresar_lote(db: Session, codigos: list[str]) -> dict:
 
     for codigo_raw in codigos:
         codigo = codigo_raw.strip().upper()
+        
         """
         if codigo in existentes:
             duplicadas.append(codigo)
