@@ -24,9 +24,19 @@ class Usuario(Base):
     __table_args__ = {"schema": "lab"}
 
     id = Column(String, primary_key=True)
-    nombre = Column(String, nullable=False)
-    clave = Column(String, nullable=False)
+
+    username = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+
+    password_hash = Column(String, nullable=False)
+
+    email = Column(String, nullable=False)
     rol = Column(String, nullable=False)
+
+    active = Column(Boolean, nullable=False)
+
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
 
 
 class Muestra(Base):
