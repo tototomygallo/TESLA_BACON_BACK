@@ -105,7 +105,7 @@ async def ingresar_lote(db: Session, codigos: list[str]) -> dict:
     return {"ingresadas": ingresadas, "rechazadas": rechazadas, "duplicadas": duplicadas}
 
 
-def validar_muestra(db: Session, protocolo: str) -> Muestra:
+async def validar_muestra(db: Session, protocolo: str) -> Muestra:
     muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
     if not muestra:
         raise ValueError("Muestra no encontrada")
@@ -113,6 +113,19 @@ def validar_muestra(db: Session, protocolo: str) -> Muestra:
         raise ValueError("Solo se pueden validar muestras en estado 'En validación'")
     if muestra.intentos_fallidos >= 2:
         raise ValueError("No es posible generar el informe requerido con esta muestra")
+
+    # Generar el PDF del informe
+    from app.services.pdf_generator import generar_informe_pdf
+    pdf_bytes = generar_informe_pdf(muestra)
+
+    # Subir el PDF a BACON (el estado en BACON cambia a 'completado' automáticamente)
+    resultado_bacon = await bacon.subir_pdf_a_bacon(muestra.codigo_taukit, pdf_bytes)
+    if not resultado_bacon:
+        raise ValueError("No se pudo subir el PDF a BACON. La muestra no fue completada.")
+
+    muestra.bacon_pdf_enviado = True
+
+    # Marcar como completado en nuestro sistema
     muestra.estado = "completado"
     muestra.tiene_error = False
     db.commit()

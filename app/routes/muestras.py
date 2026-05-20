@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -11,6 +12,8 @@ from app.schemas import (
 from app.services import muestras as muestras_svc
 from app.services.carga_txt import cargar_resultados_txt
 from app.services.converters import muestra_to_response
+from app.services.pdf_generator import generar_informe_pdf
+from app.models import Muestra
 
 router = APIRouter(prefix="/muestras", tags=["Muestras"])
 
@@ -39,9 +42,9 @@ async def cargar_txt(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/{protocolo}/validar", response_model=MuestraResponse)
-def validar(protocolo: str, db: Session = Depends(get_db)):
+async def validar(protocolo: str, db: Session = Depends(get_db)):
     try:
-        muestra = muestras_svc.validar_muestra(db, protocolo)
+        muestra = await muestras_svc.validar_muestra(db, protocolo)
         return muestra_to_response(muestra)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -63,3 +66,22 @@ def imprimir_etiquetas(protocolo: str, db: Session = Depends(get_db)):
         return muestra_to_response(muestra)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/{protocolo}/pdf")
+def descargar_pdf(protocolo: str, db: Session = Depends(get_db)):
+    """Genera y descarga el PDF del informe de una muestra."""
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise HTTPException(status_code=404, detail="Muestra no encontrada")
+    if muestra.resultado_test_value is None:
+        raise HTTPException(status_code=422, detail="La muestra no tiene resultados cargados")
+    try:
+        pdf_bytes = generar_informe_pdf(muestra)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="informe-{protocolo}.pdf"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

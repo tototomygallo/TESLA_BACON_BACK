@@ -53,6 +53,7 @@ class Muestra(Base):
     resultado_test_value = Column(Float, nullable=True)
     resultado_cargado_en = Column(String, nullable=True)
     bacon_recibido = Column(Boolean, nullable=False, default=False)  # True = BACON fue notificado
+    bacon_pdf_enviado = Column(Boolean, nullable=False, default=False)  # True = PDF subido a BACON
     fecha_ingreso = Column(DateTime, server_default=func.now())
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

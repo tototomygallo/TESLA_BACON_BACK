@@ -74,3 +74,13 @@ cambiar `DATABASE_URL` a PostgreSQL o SQL Server y remover el
 `check_same_thread` en `database.py`.
 
 Los usuarios se crean automáticamente al primer arranque (6 usuarios de prueba).
+
+### Migraciones SQL Server
+
+Si usás `mssql+pyodbc`, aplicá las migraciones de `migrations/` sobre la base
+antes de levantar la API. Por ejemplo, si aparece un error en una consulta a
+`lab.muestras` filtrando por `bacon_recibido`, ejecutar:
+
+```sql
+:r migrations/20260519_add_bacon_flags.sql
+```
