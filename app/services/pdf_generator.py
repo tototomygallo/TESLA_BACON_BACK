@@ -198,7 +198,7 @@ def generar_informe_pdf(muestra: Muestra) -> bytes:
 
     # Firma
     if os.path.exists(FIRMA_IMG):
-        pdf.image(FIRMA_IMG, x=page_w - margin_r - 42, y=footer_line_y - 40, w=40)
+        pdf.image(FIRMA_IMG, x=page_w - margin_r - 42, y=footer_line_y - 48, w=40)
 
     pdf.set_draw_color(0)
     pdf.set_line_width(0.3)
@@ -208,10 +208,10 @@ def generar_informe_pdf(muestra: Muestra) -> bytes:
     pdf.set_xy(margin_l, footer_line_y - 15)
     pdf.cell(0, 3, "Este protocolo fue validado y firmado electrónicamente por:")
     pdf.set_font("Helvetica", "B", 8)
-    pdf.set_xy(page_w - margin_r - 42, footer_line_y - 9)
+    pdf.set_xy(page_w - margin_r - 42, footer_line_y - 16)
     pdf.cell(40, 3, "Lic. Jorge E.R.Pucci", align="R")
     pdf.set_font("Helvetica", "", 8)
-    pdf.set_xy(page_w - margin_r - 42, footer_line_y - 4)
+    pdf.set_xy(page_w - margin_r - 42, footer_line_y - 10)
     pdf.cell(40, 3, "M.P. 3280  CPQ", align="R")
 
     pdf.set_font("Helvetica", "B", 8)
