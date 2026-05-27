@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     sucursal_nombre: str = "Morón"
     estudio_codigo: str = "001"
     estudio_nombre: str = "Helicobacter Pylori (Urea-13C)"
+    db_schema: str = "lab"
+    app_env: str = "prod"
 
     class Config:
         env_file = ".env"

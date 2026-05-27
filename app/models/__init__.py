@@ -4,6 +4,10 @@ import enum
 
 from app.database import Base
 
+from app.config import get_settings
+
+settings = get_settings()
+
 
 class EstadoMuestra(str, enum.Enum):
     recibido = "recibido"
@@ -21,7 +25,7 @@ class RolUsuario(str, enum.Enum):
 
 class Usuario(Base):
     __tablename__ = "usuarios"
-    __table_args__ = {"schema": "lab"}
+    __table_args__ = {"schema": settings.db_schema}
 
     id = Column(String, primary_key=True)
 
@@ -44,7 +48,7 @@ class Usuario(Base):
 
 class Muestra(Base):
     __tablename__ = "muestras"
-    __table_args__ = {"schema": "lab"}
+    __table_args__ = {"schema": settings.db_schema}
 
     protocolo = Column(String, primary_key=True)
     codigo_taukit = Column(String, nullable=False, unique=True, index=True)
@@ -74,14 +78,14 @@ class Muestra(Base):
 
 class Consecutivo(Base):
     __tablename__ = "consecutivos"
-    __table_args__ = {"schema": "lab"}
+    __table_args__ = {"schema": settings.db_schema}
     estudio_codigo = Column(String, primary_key=True)
     ultimo = Column(Integer, nullable=False, default=0)
 
 
 class Discrepancia(Base):
     __tablename__ = "discrepancias"
-    __table_args__ = {"schema": "lab"}
+    __table_args__ = {"schema": settings.db_schema}
     id = Column(Integer, primary_key=True, autoincrement=True)
     codigo = Column(String, nullable=False)
     motivo = Column(String, nullable=False)
