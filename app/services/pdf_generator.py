@@ -191,7 +191,13 @@ def generar_informe_pdf(muestra: Muestra, validacion_clinica: bool = True) -> by
     pdf.cell(0, 5, "Incremento sobre basal")
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_xy(col_valor, y)
-    pdf.cell(0, 5, "No concluyente" if not validacion_clinica else str(muestra.resultado_test_value))
+    pdf.cell(
+        0,
+        5,
+        "No concluyente"
+        if not validacion_clinica
+        else f"{muestra.resultado_test_value:.2f}",
+    )
     pdf.set_font("Helvetica", "", 9)
     pdf.set_xy(page_w - margin_r - 45, y)
     pdf.cell(45, 4, "Hasta 5 : Negativo", align="R")
