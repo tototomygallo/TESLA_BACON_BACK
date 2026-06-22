@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Usuario
+from app.services.auditoria import registrar_auditoria
 
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -19,7 +20,8 @@ PASSWORD_POLICY_MESSAGE = (
 
 
 class LoginRequest(BaseModel):
-    userId: str
+    userId: str | None = None
+    username: str | None = None
     password: str  # Acepta password pero no lo valida en modo pruebas
 
 
@@ -37,6 +39,7 @@ class CambiarPasswordRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     id: str
+    username: str
     nombre: str
     rol: str
     passwordExpired: bool = False
@@ -70,9 +73,13 @@ def password_expirada(usuario: Usuario) -> bool:
 
 @router.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
+    user_id = body.username or body.userId
+    if not user_id:
+        raise HTTPException(status_code=422, detail="Falta username")
+
     usuario = (
         db.query(Usuario)
-        .filter(Usuario.username == body.userId.strip().lower())
+        .filter(Usuario.username == user_id.strip().lower())
         .first()
     )
 
@@ -88,7 +95,8 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 
     return LoginResponse(
         id=usuario.id,
-        nombre=usuario.username,
+        username=usuario.username,
+        nombre=usuario.name,
         rol=usuario.rol,
         passwordExpired=password_expirada(usuario),
     )
@@ -131,5 +139,14 @@ def cambiar_password(
     usuario.password_changed_at = datetime.now()
     usuario.force_password_change = False
     usuario.updated_at = datetime.now()
+    registrar_auditoria(
+        db,
+        accion="usuario_cambio_password",
+        usuario_id=x_user_id or usuario.username,
+        codigo=usuario.username,
+        tipo_estudio="usuario",
+        detalle="Usuario cambio su contraseña",
+        datos={"usuario_id": usuario.id, "username": usuario.username},
+    )
     db.commit()
     return {"ok": True}

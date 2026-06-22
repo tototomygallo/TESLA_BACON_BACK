@@ -1,8 +1,12 @@
+from sqlalchemy.orm import object_session
+
 from app.models import Muestra
 from app.schemas import (
     EstudioSchema, MuestraResponse, PacienteSchema,
-    ResultadoMuestraSchema, SucursalSchema,
+    ResultadoLactokitSchema, ResultadoMuestraSchema, SucursalSchema,
 )
+from app.services.estudios import TIPO_LACTOKIT
+from app.services.lactokit import leer_valores_lactokit, obtener_resultado_lactokit
 
 
 def muestra_to_response(m: Muestra) -> MuestraResponse:
@@ -17,9 +21,32 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
             cargadoEn=m.resultado_cargado_en or "",
         )
 
+    resultados_lactokit = None
+    resultado_lactokit = None
+    if m.tipo_estudio == TIPO_LACTOKIT:
+        db = object_session(m)
+        if db:
+            resultado_lactokit = obtener_resultado_lactokit(db, m.protocolo)
+    valores_lactokit = leer_valores_lactokit(resultado_lactokit)
+    if valores_lactokit and resultado_lactokit:
+        resultados_lactokit = ResultadoLactokitSchema(
+            h2=valores_lactokit["h2"],
+            ch4=valores_lactokit["ch4"],
+            co2=valores_lactokit["co2"],
+            valoracion=resultado_lactokit.valoracion,
+            descripcion=resultado_lactokit.descripcion,
+            cargadoEn=resultado_lactokit.cargado_en or "",
+        )
+
     return MuestraResponse(
         protocolo=m.protocolo,
         codigoTauKit=m.codigo_taukit,
+        codigoLactokit=(
+            resultado_lactokit.codigo_lactokit
+            if resultado_lactokit
+            else m.codigo_taukit if m.tipo_estudio == TIPO_LACTOKIT else None
+        ),
+        tipoEstudio=m.tipo_estudio or "taukit",
         paciente=PacienteSchema(
             nombre=m.paciente_nombre, apellido=m.paciente_apellido,
             dni=m.paciente_dni, fechaTomaMuestra=m.fecha_toma_muestra,
@@ -31,4 +58,8 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
         tieneError=m.tiene_error,
         intentosFallidos=m.intentos_fallidos,
         resultados=resultados,
+        resultadosLactokit=resultados_lactokit,
+        pdfGenerado=m.pdf_generado,
+        pdfVerificado=bool(getattr(m, "pdf_verificado_bacon", False)),
+        pdfVerificacion=getattr(m, "pdf_verificacion_bacon", None),
     )

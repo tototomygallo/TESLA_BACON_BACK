@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 
 class PacienteSchema(BaseModel):
@@ -28,9 +28,20 @@ class ResultadoMuestraSchema(BaseModel):
     cargadoEn: str
 
 
+class ResultadoLactokitSchema(BaseModel):
+    h2: list[Any]
+    ch4: list[Any]
+    co2: list[Any]
+    valoracion: str
+    descripcion: str
+    cargadoEn: str
+
+
 class MuestraResponse(BaseModel):
     protocolo: str
     codigoTauKit: str
+    codigoLactokit: Optional[str] = None
+    tipoEstudio: str = "taukit"
     paciente: PacienteSchema
     estudio: EstudioSchema
     sucursal: SucursalSchema
@@ -39,6 +50,11 @@ class MuestraResponse(BaseModel):
     tieneError: bool
     intentosFallidos: int
     resultados: Optional[ResultadoMuestraSchema] = None
+    resultadosLactokit: Optional[ResultadoLactokitSchema] = None
+    pdfGenerado: bool = False
+    pdfVerificado: bool = False
+    pdfVerificacion: Optional[Any] = None
+    advertencia: Optional[str] = None
 
 
 class IngresarLoteRequest(BaseModel):
@@ -61,6 +77,38 @@ class CargaTxtResponse(BaseModel):
     yaAnuladas: list[str]
     controles: int
     erroresParseo: int
+
+
+class LactokitResultadosRequest(BaseModel):
+    h2: list[Any]
+    ch4: list[Any]
+    co2: list[Any]
+    confirmar: bool = True
+
+
+class MuestraAuditoriaSchema(BaseModel):
+    id: int
+    protocolo: Optional[str] = None
+    codigo: Optional[str] = None
+    tipoEstudio: Optional[str] = None
+    accion: str
+    usuarioId: Optional[str] = None
+    estadoAnterior: Optional[str] = None
+    estadoNuevo: Optional[str] = None
+    detalle: Optional[str] = None
+    datos: Optional[str] = None
+    fecha: str
+
+
+class ProtocoloEditadoSchema(BaseModel):
+    protocolo: str
+    numeroSerie: str
+    tipoEstudio: str
+    fechaIngreso: str
+    fechaEdicion: str
+    motivo: str
+    usuario: str
+    camposEditados: list[str]
 
 
 class DiscrepanciaSchema(BaseModel):

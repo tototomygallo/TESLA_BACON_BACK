@@ -35,7 +35,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Users\schar\OneDrive\Escritorio\CONSULTERS\TESLA\BACON\TESLA_BACON_BACK\venv\Scripts\activate"
+VIRTUAL_ENV="C:\Users\schar\OneDrive\Escritorio\CONSULTERS\TESLA\BACON\TESLA_BACON_BACK\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

@@ -8,8 +8,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import RolUsuario, Usuario
+from app.models import MuestraAuditoria, RolUsuario, Usuario
 from app.routes.auth import hash_password, validar_password_fuerte
+from app.schemas import MuestraAuditoriaSchema
+from app.services.auditoria import registrar_auditoria
 
 router = APIRouter(prefix="/configuracion", tags=["Configuración"])
 
@@ -70,13 +72,11 @@ def _require_admin(
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Falta X-User-Id")
 
-    usuario = db.query(Usuario).filter(Usuario.id == x_user_id).first()
-    if not usuario:
-        usuario = (
-            db.query(Usuario)
-            .filter(Usuario.username == x_user_id.strip().lower())
-            .first()
-        )
+    usuario = (
+        db.query(Usuario)
+        .filter(Usuario.username == x_user_id.strip().lower())
+        .first()
+    )
 
     if not usuario or usuario.active == False:
         raise HTTPException(status_code=401, detail="Usuario no autorizado")
@@ -95,6 +95,37 @@ def listar_usuarios(
     _require_admin(db, x_user_id)
     usuarios = db.query(Usuario).order_by(Usuario.username.asc()).all()
     return [_usuario_to_response(usuario) for usuario in usuarios]
+
+
+@router.get("/auditoria", response_model=list[MuestraAuditoriaSchema])
+def listar_auditoria_configuracion(
+    db: Session = Depends(get_db),
+    x_user_id: str | None = Header(default=None),
+):
+    _require_admin(db, x_user_id)
+    filas = (
+        db.query(MuestraAuditoria)
+        .filter(MuestraAuditoria.tipo_estudio == "usuario")
+        .order_by(MuestraAuditoria.fecha.desc(), MuestraAuditoria.id.desc())
+        .limit(300)
+        .all()
+    )
+    return [
+        MuestraAuditoriaSchema(
+            id=fila.id,
+            protocolo=fila.protocolo,
+            codigo=fila.codigo,
+            tipoEstudio=fila.tipo_estudio,
+            accion=fila.accion,
+            usuarioId=fila.usuario_id,
+            estadoAnterior=fila.estado_anterior,
+            estadoNuevo=fila.estado_nuevo,
+            detalle=fila.detalle,
+            datos=fila.datos,
+            fecha=fila.fecha.strftime("%Y-%m-%d %H:%M:%S") if fila.fecha else "",
+        )
+        for fila in filas
+    ]
 
 
 @router.post("/usuarios", response_model=UsuarioResponse)
@@ -129,6 +160,20 @@ def crear_usuario(
         updated_at=ahora,
     )
     db.add(usuario)
+    registrar_auditoria(
+        db,
+        accion="usuario_creado",
+        usuario_id=x_user_id,
+        codigo=username,
+        tipo_estudio="usuario",
+        detalle="Usuario creado desde configuracion",
+        datos={
+            "usuario_id": usuario.id,
+            "username": usuario.username,
+            "rol": usuario.rol,
+            "active": bool(usuario.active),
+        },
+    )
     db.commit()
     db.refresh(usuario)
     return _usuario_to_response(usuario)
@@ -148,6 +193,13 @@ def actualizar_usuario(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     campos = _campos_enviados(body)
+    datos_anteriores = {
+        "username": usuario.username,
+        "name": usuario.name,
+        "email": usuario.email,
+        "rol": usuario.rol,
+        "active": bool(usuario.active),
+    }
 
     if "username" in campos:
         if not isinstance(body.username, str) or not body.username.strip():
@@ -189,6 +241,26 @@ def actualizar_usuario(
         usuario.active = body.active
 
     usuario.updated_at = datetime.now()
+    registrar_auditoria(
+        db,
+        accion="usuario_actualizado",
+        usuario_id=x_user_id,
+        codigo=usuario.username,
+        tipo_estudio="usuario",
+        detalle="Usuario actualizado desde configuracion",
+        datos={
+            "usuario_id": usuario.id,
+            "campos": sorted(campos),
+            "antes": datos_anteriores,
+            "despues": {
+                "username": usuario.username,
+                "name": usuario.name,
+                "email": usuario.email,
+                "rol": usuario.rol,
+                "active": bool(usuario.active),
+            },
+        },
+    )
 
     db.commit()
     db.refresh(usuario)
@@ -214,6 +286,15 @@ def reset_password_usuario(
     usuario.password_changed_at = datetime.now()
     usuario.force_password_change = True
     usuario.updated_at = datetime.now()
+    registrar_auditoria(
+        db,
+        accion="usuario_reset_password",
+        usuario_id=x_user_id,
+        codigo=usuario.username,
+        tipo_estudio="usuario",
+        detalle="Administrador reseteo la contraseña de un usuario",
+        datos={"usuario_id": usuario.id, "username": usuario.username},
+    )
     db.commit()
     return {"ok": True}
 
@@ -232,6 +313,21 @@ def eliminar_usuario(
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    registrar_auditoria(
+        db,
+        accion="usuario_eliminado",
+        usuario_id=x_user_id,
+        codigo=usuario.username,
+        tipo_estudio="usuario",
+        detalle="Usuario eliminado desde configuracion",
+        datos={
+            "usuario_id": usuario.id,
+            "username": usuario.username,
+            "name": usuario.name,
+            "email": usuario.email,
+            "rol": usuario.rol,
+        },
+    )
     db.delete(usuario)
     db.commit()
     return {"ok": True}
