@@ -75,6 +75,7 @@ class CargaTxtResponse(BaseModel):
     noEncontrados: list[str]
     yaCompletados: list[str]
     yaAnuladas: list[str]
+    requierenReinicio: list[str] = []
     controles: int
     erroresParseo: int
 

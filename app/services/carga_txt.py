@@ -22,6 +22,7 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
     no_encontrados: list[str] = []
     ya_completados: list[str] = []
     ya_anuladas: list[str] = []
+    requieren_reinicio: list[str] = []
 
     for r in parseado.resultados:
         muestra = db.query(Muestra).filter_by(protocolo=r.test_id).first()
@@ -46,7 +47,16 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
             no_encontrados.append(r.test_id)
             continue
 
-        tuvo_error_previo = muestra.tiene_error
+        # Si la muestra ya tiene resultados cargados (en_validacion o en error), no se
+        # pisa: se saltea sin tocar resultados ni intentos. La única vía para recargar
+        # es "Reiniciar muestra", que borra los resultados. Así hay una sola carga por
+        # reinicio.
+        if muestra.resultado_cargado_en is not None:
+            requieren_reinicio.append(muestra.protocolo)
+            continue
+
+        # Si tiene intentos previos, viene de un reinicio: es un reintento.
+        es_reintento = muestra.intentos_fallidos > 0
         estado_anterior = muestra.estado
         intentos_anteriores = muestra.intentos_fallidos
 
@@ -71,7 +81,7 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
         else:
             muestra.estado = EstadoMuestra.en_validacion
             muestra.tiene_error = False
-            if tuvo_error_previo:
+            if es_reintento:
                 cargados_reintentando.append(muestra.protocolo)
             else:
                 cargados_ok.append(muestra.protocolo)
@@ -107,6 +117,7 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
         "noEncontrados": no_encontrados,
         "yaCompletados": ya_completados,
         "yaAnuladas": ya_anuladas,
+        "requierenReinicio": requieren_reinicio,
         "controles": parseado.controles,
         "erroresParseo": parseado.errores,
     }
