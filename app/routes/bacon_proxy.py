@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import get_current_user
+from app.models import Usuario
 from app.services.bacon import obtener_muestras_enviadas
 from app.services.bacon_retry import obtener_pendientes, reintentar_pendientes
 from app.schemas import BaconMuestraSchema
@@ -11,7 +13,7 @@ router = APIRouter(prefix="/bacon", tags=["BACON"])
 
 
 @router.get("/muestras-enviadas", response_model=list[BaconMuestraSchema])
-async def muestras_enviadas():
+async def muestras_enviadas(usuario: Usuario = Depends(get_current_user)):
     try:
         datos = await obtener_muestras_enviadas()
         return datos
@@ -29,7 +31,10 @@ class PendientesResponse(BaseModel):
 
 
 @router.get("/pendientes", response_model=PendientesResponse)
-async def pendientes(db: Session = Depends(get_db)):
+async def pendientes(
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
     """Muestras ingresadas que no pudimos notificar a BACON."""
     muestras = await obtener_pendientes(db)
     return PendientesResponse(
@@ -45,7 +50,10 @@ class ReintentoResponse(BaseModel):
 
 
 @router.post("/reintentar", response_model=ReintentoResponse)
-async def reintentar(db: Session = Depends(get_db)):
+async def reintentar(
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
     """Reintenta notificar a BACON las muestras pendientes."""
     resultado = await reintentar_pendientes(db)
     return ReintentoResponse(**resultado)

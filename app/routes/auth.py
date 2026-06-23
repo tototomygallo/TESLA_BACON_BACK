@@ -1,13 +1,20 @@
 from datetime import datetime, timedelta
 import hashlib
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import get_current_user
 from app.models import Usuario
 from app.services.auditoria import registrar_auditoria
+from app.services.security import (
+    TokenInvalido,
+    crear_access_token,
+    crear_refresh_token,
+    decodificar_token,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -37,12 +44,33 @@ class CambiarPasswordRequest(BaseModel):
     nuevaPassword: str | None = None
 
 
-class LoginResponse(BaseModel):
+class UsuarioOut(BaseModel):
     id: str
     username: str
     nombre: str
     rol: str
     passwordExpired: bool = False
+
+
+class LoginResponse(BaseModel):
+    usuario: UsuarioOut
+    token: str
+    tokenType: str = "Bearer"
+    expiresIn: int            # segundos de vida del access token
+    refreshToken: str
+    refreshExpiresIn: int     # segundos de vida del refresh token
+
+
+class RefreshRequest(BaseModel):
+    refreshToken: str
+
+
+class RefreshResponse(BaseModel):
+    token: str
+    tokenType: str = "Bearer"
+    expiresIn: int
+    refreshToken: str
+    refreshExpiresIn: int
 
 
 def verificar_password(password_plana: str, password_hash: str) -> bool:
@@ -92,13 +120,52 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not verificar_password(body.password, usuario.password_hash):
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
+    access_token, expires_in = crear_access_token(usuario)
+    refresh_token, refresh_expires_in = crear_refresh_token(usuario)
 
     return LoginResponse(
-        id=usuario.id,
-        username=usuario.username,
-        nombre=usuario.name,
-        rol=usuario.rol,
-        passwordExpired=password_expirada(usuario),
+        usuario=UsuarioOut(
+            id=usuario.id,
+            username=usuario.username,
+            nombre=usuario.name,
+            rol=usuario.rol,
+            passwordExpired=password_expirada(usuario),
+        ),
+        token=access_token,
+        expiresIn=expires_in,
+        refreshToken=refresh_token,
+        refreshExpiresIn=refresh_expires_in,
+    )
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+def refresh(body: RefreshRequest, db: Session = Depends(get_db)):
+    try:
+        payload = decodificar_token(body.refreshToken, tipo_esperado="refresh")
+    except TokenInvalido:
+        raise HTTPException(
+            status_code=401,
+            detail="Token inválido o expirado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    usuario = db.query(Usuario).filter(Usuario.id == payload.get("sub")).first()
+    if not usuario or usuario.active is False:
+        raise HTTPException(
+            status_code=401,
+            detail="Token inválido o expirado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token, expires_in = crear_access_token(usuario)
+    # Rotación del refresh token: cada refresh renueva también la ventana larga.
+    refresh_token, refresh_expires_in = crear_refresh_token(usuario)
+
+    return RefreshResponse(
+        token=access_token,
+        expiresIn=expires_in,
+        refreshToken=refresh_token,
+        refreshExpiresIn=refresh_expires_in,
     )
 
 
@@ -106,29 +173,17 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 def cambiar_password(
     body: CambiarPasswordRequest,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    usuario: Usuario = Depends(get_current_user),
 ):
-    user_id = body.userId or body.username or body.id or x_user_id
+    # El usuario solo puede cambiar su propia contraseña: el objetivo sale del token,
+    # no del body (se ignoran userId/username/id que el front pudiera mandar).
     password_actual = body.passwordActual or body.currentPassword or body.actualPassword
     password_nueva = body.passwordNueva or body.newPassword or body.nuevaPassword
 
-    if not user_id:
-        raise HTTPException(status_code=422, detail="Falta userId")
     if not password_actual:
         raise HTTPException(status_code=422, detail="Falta passwordActual")
     if not password_nueva:
         raise HTTPException(status_code=422, detail="Falta passwordNueva")
-
-    user_id = user_id.strip().lower()
-    usuario = db.query(Usuario).filter(Usuario.username == user_id).first()
-    if not usuario:
-        usuario = db.query(Usuario).filter(Usuario.id == user_id).first()
-
-    if not usuario:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if usuario.active == False:
-        raise HTTPException(status_code=403, detail="Usuario desactivado")
 
     if not verificar_password(password_actual, usuario.password_hash):
         raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
@@ -142,7 +197,7 @@ def cambiar_password(
     registrar_auditoria(
         db,
         accion="usuario_cambio_password",
-        usuario_id=x_user_id or usuario.username,
+        usuario_id=usuario.username,
         codigo=usuario.username,
         tipo_estudio="usuario",
         detalle="Usuario cambio su contraseña",

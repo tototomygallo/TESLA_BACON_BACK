@@ -3,11 +3,12 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_admin
 from app.models import MuestraAuditoria, RolUsuario, Usuario
 from app.routes.auth import hash_password, validar_password_fuerte
 from app.schemas import MuestraAuditoriaSchema
@@ -65,34 +66,11 @@ def _validar_email(email: str) -> bool:
     return re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email) is not None
 
 
-def _require_admin(
-    db: Session,
-    x_user_id: str | None,
-) -> Usuario:
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Falta X-User-Id")
-
-    usuario = (
-        db.query(Usuario)
-        .filter(Usuario.username == x_user_id.strip().lower())
-        .first()
-    )
-
-    if not usuario or usuario.active == False:
-        raise HTTPException(status_code=401, detail="Usuario no autorizado")
-
-    if usuario.rol != RolUsuario.admin.value:
-        raise HTTPException(status_code=403, detail="Solo administradores")
-
-    return usuario
-
-
 @router.get("/usuarios", response_model=list[UsuarioResponse])
 def listar_usuarios(
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
     usuarios = db.query(Usuario).order_by(Usuario.username.asc()).all()
     return [_usuario_to_response(usuario) for usuario in usuarios]
 
@@ -100,9 +78,8 @@ def listar_usuarios(
 @router.get("/auditoria", response_model=list[MuestraAuditoriaSchema])
 def listar_auditoria_configuracion(
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
     filas = (
         db.query(MuestraAuditoria)
         .filter(MuestraAuditoria.tipo_estudio == "usuario")
@@ -132,10 +109,8 @@ def listar_auditoria_configuracion(
 def crear_usuario(
     body: UsuarioCrearRequest,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
-
     username = body.username.strip().lower()
     if len(username) < 3:
         raise HTTPException(status_code=422, detail="El usuario debe tener al menos 3 caracteres")
@@ -163,7 +138,7 @@ def crear_usuario(
     registrar_auditoria(
         db,
         accion="usuario_creado",
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         codigo=username,
         tipo_estudio="usuario",
         detalle="Usuario creado desde configuracion",
@@ -184,10 +159,8 @@ def actualizar_usuario(
     usuario_id: str,
     body: UsuarioActualizarRequest,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
-
     usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -244,7 +217,7 @@ def actualizar_usuario(
     registrar_auditoria(
         db,
         accion="usuario_actualizado",
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         codigo=usuario.username,
         tipo_estudio="usuario",
         detalle="Usuario actualizado desde configuracion",
@@ -272,10 +245,8 @@ def reset_password_usuario(
     usuario_id: str,
     body: ResetPasswordRequest,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
-
     validar_password_fuerte(body.passwordNueva)
 
     usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
@@ -289,7 +260,7 @@ def reset_password_usuario(
     registrar_auditoria(
         db,
         accion="usuario_reset_password",
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         codigo=usuario.username,
         tipo_estudio="usuario",
         detalle="Administrador reseteo la contraseña de un usuario",
@@ -303,9 +274,8 @@ def reset_password_usuario(
 def eliminar_usuario(
     usuario_id: str,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    admin = _require_admin(db, x_user_id)
     if admin.id == usuario_id:
         raise HTTPException(status_code=422, detail="No podés eliminar tu propio usuario")
 
@@ -316,7 +286,7 @@ def eliminar_usuario(
     registrar_auditoria(
         db,
         accion="usuario_eliminado",
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         codigo=usuario.username,
         tipo_estudio="usuario",
         detalle="Usuario eliminado desde configuracion",

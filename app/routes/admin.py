@@ -2,14 +2,14 @@ import smtplib
 import json
 from email.message import EmailMessage
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import EstadoMuestra, Muestra, MuestraAuditoria
-from app.routes.configuracion import _require_admin
+from app.dependencies import require_admin
+from app.models import EstadoMuestra, Muestra, MuestraAuditoria, Usuario
 from app.schemas import ProtocoloEditadoSchema
 from app.services.auditoria import registrar_auditoria
 
@@ -40,10 +40,8 @@ def _json_auditoria(datos: str | None) -> dict:
 @router.get("/protocolos-editados", response_model=list[ProtocoloEditadoSchema])
 def listar_protocolos_editados(
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
-
     filas = (
         db.query(MuestraAuditoria, Muestra)
         .join(Muestra, MuestraAuditoria.protocolo == Muestra.protocolo)
@@ -103,9 +101,8 @@ def eliminar_serie(
     numero_serie: str,
     body: AdminSerieDeleteRequest,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
     motivo = _motivo_obligatorio(body.motivo)
     muestra = _buscar_muestra_por_serie(db, numero_serie)
 
@@ -117,7 +114,7 @@ def eliminar_serie(
         db,
         accion="admin_serie_eliminada",
         muestra=muestra,
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         estado_anterior=estado_anterior,
         estado_nuevo=muestra.estado,
         detalle=motivo,
@@ -140,9 +137,8 @@ def actualizar_paciente_serie(
     numero_serie: str,
     body: AdminPacienteUpdateRequest,
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
     motivo = _motivo_obligatorio(body.motivo)
     muestra = _buscar_muestra_por_serie(db, numero_serie)
 
@@ -190,7 +186,7 @@ def actualizar_paciente_serie(
         db,
         accion="admin_paciente_actualizado",
         muestra=muestra,
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         estado_anterior=muestra.estado,
         estado_nuevo=muestra.estado,
         detalle=motivo,
@@ -212,9 +208,8 @@ async def contacto_bacon(
     mensaje: str = Form(...),
     archivos: list[UploadFile] | None = File(default=None),
     db: Session = Depends(get_db),
-    x_user_id: str | None = Header(default=None),
+    admin: Usuario = Depends(require_admin),
 ):
-    _require_admin(db, x_user_id)
     asunto_limpio = asunto.strip()
     mensaje_limpio = mensaje.strip()
     if not asunto_limpio:
@@ -254,7 +249,7 @@ async def contacto_bacon(
         registrar_auditoria(
             db,
             accion="admin_contacto_bacon_error",
-            usuario_id=x_user_id,
+            usuario_id=admin.username,
             tipo_estudio="admin",
             detalle="Error enviando mail a BACON",
             datos={
@@ -270,7 +265,7 @@ async def contacto_bacon(
     registrar_auditoria(
         db,
         accion="admin_contacto_bacon_enviado",
-        usuario_id=x_user_id,
+        usuario_id=admin.username,
         tipo_estudio="admin",
         detalle="Mail enviado a BACON desde Administración",
         datos={

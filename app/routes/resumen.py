@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, case
 
 from app.database import get_db
-from app.models import Discrepancia, EstadoMuestra, Muestra
+from app.dependencies import get_current_user
+from app.models import Discrepancia, EstadoMuestra, Muestra, Usuario
 from app.schemas import DiscrepanciaSchema, ResumenDiarioSchema
 
 router = APIRouter(prefix="/resumen", tags=["Resumen"])
@@ -43,7 +44,10 @@ def _discrepancias_por_fecha(db: Session, fecha: str) -> list[DiscrepanciaSchema
 
 
 @router.get("/historial", response_model=list[ResumenDiarioSchema])
-def historial(db: Session = Depends(get_db)):
+def historial(
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
     """Devuelve resumen diario de los últimos 14 días."""
     hoy = datetime.now().date()
     resultados = []
@@ -97,7 +101,11 @@ def historial(db: Session = Depends(get_db)):
 
 
 @router.get("/{fecha}", response_model=ResumenDiarioSchema)
-def resumen_fecha(fecha: str, db: Session = Depends(get_db)):
+def resumen_fecha(
+    fecha: str,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
     """Devuelve el resumen de una fecha específica (YYYY-MM-DD)."""
     inicio, fin = _rango_dia(fecha)
     muestras_dia = (
