@@ -4,8 +4,8 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./taukits.db"
-    bacon_api_url: str = "https://demob.bacontrack.com.ar/api"
-    #bacon_api_url: str = "https://back.bacontrack.com.ar/api"
+    #bacon_api_url: str = "https://demob.bacontrack.com.ar/api"
+    bacon_api_url: str = "https://back.bacontrack.com.ar/api"
     bacon_token: str = ""
     sucursal_codigo: str = "001"
     sucursal_nombre: str = "Morón"
