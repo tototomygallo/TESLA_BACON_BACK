@@ -96,7 +96,17 @@ async def subir_pdf_a_bacon(numero_serie: str, pdf_bytes: bytes) -> dict | None:
                     "Accept-Language": BACON_HEADERS["Accept-Language"],
                 },
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                cuerpo = response.text[:500]
+                print(
+                    f"[BACON] subirResultadoPDF {numero_serie} -> HTTP "
+                    f"{response.status_code}. Respuesta BACON: {cuerpo!r}"
+                )
+                return {
+                    "success": False,
+                    "error": f"BACON respondio HTTP {response.status_code}: {cuerpo}",
+                    "raw": cuerpo,
+                }
             data = response.json()
             if isinstance(data, dict) and (
                 data.get("success") is False or data.get("type") == "danger"

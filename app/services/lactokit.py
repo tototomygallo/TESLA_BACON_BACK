@@ -8,12 +8,23 @@ if TYPE_CHECKING:
     from app.models import LactokitResultado, Muestra
 
 LACTOKIT_DESCRIPCIONES = {
-    "1": "Resultado no compatible con malabsorción de lactosa",
-    "2": "Compatible con malabsorción de lactosa con elevación de H2 y CH4",
-    "3": "Compatible con malabsorción de lactosa con elevación de H2",
-    "4": "Compatible con malabsorción de lactosa con elevación de CH4",
-    "ERROR": "Ninguna condición aplicable",
+    "1": "SE DEBE REPETIR LA PRUEBA POR MALA PRÁCTICA EN LA RECOJIDA DE LAS MUESTRAS DE ALIENTO (CO2 < 1,4%)",
+    "2": "RESULTADO COMPATIBLE CON MALABSORCION DE LACTOSA CON ELEVACION DE HIDROGENO, SI EL PACIENTE REPORTA SINTOMAS, ENTONCES ESTARIAMOS FRENTE A UNA INTOLERANCIA A LA LACTOSA.",
+    "3": "RESULTADO COMPATIBLE CON MALABSORCION DE LACTOSA CON ELEVACION DE METANO, SI EL PACIENTE REPORTA SINTOMAS, ENTONCES ESTARIAMOS FRENTE A UNA INTOLERANCIA A LA LACTOSA.",
+    "4": "RESULTADO COMPATIBLE CON MALABSORCION DE LACTOSA CON ELEVACION DE HIDROGENO Y METANO. SI EL PACIENTE REPORTA SINTOMAS, ENTONCES ESTARIAMOS FRENTE A UNA INTOLERANCIA A LA LACTOSA.",
+    "5": "RESULTADO NO COMPATIBLE CON MALABORCION DE LACTOSA.",
 }
+
+# Texto extra que se agrega debajo de la valoración cuando hay exactamente 3 frascos
+# con CO2 < 1,4% (condición "f" -> valoración "6").
+LACTOKIT_TEXTO_EXTRA_CO2 = (
+    "DEBIDO A QUE VARIAS MUESTRAS CONTENIAN CO2 < 1,4%, SE SUGIERE REPETIR LA PRUEBA."
+)
+
+# Letra de la condición (b/c/d/e) según el código base de valoración. Para el caso "f"
+# la valoración se guarda como "6" + letra ("6b"/"6c"/"6d"/"6e") para persistir qué
+# condición la originó; la API la expone como valoracion="6" + campo `condicion`.
+LACTOKIT_LETRA_CONDICION = {"2": "b", "3": "c", "4": "d", "5": "e"}
 
 # Un frasco con CO2 por debajo de este % no representa aire alveolar valido:
 # sus valores se descartan del calculo de la valoracion.
@@ -110,32 +121,48 @@ def calcular_valoracion_lactokit(
     ch4 = normalizar_frascos(ch4_raw)
     co2 = normalizar_frascos(co2_raw)
 
-    # Los frascos invalidos (CO2 < 1,4%) no se consideran para las condiciones de la
-    # valoracion: se enmascaran sus H2/CH4. La tabla y el grafico del informe siguen
-    # mostrando todos los valores sin alterar.
+    # Frascos invalidos = CO2 < 1,4% (mala calidad de la muestra de aliento).
     invalidos = [_frasco_co2_invalido(c) for c in co2]
+    n_invalidos = sum(1 for inv in invalidos if inv)
+
+    # Condicion "a": 4 o mas frascos con CO2 < 1,4% -> mala practica (valoracion 1).
+    if n_invalidos >= 4:
+        return ValoracionLactokit(
+            valoracion="1",
+            descripcion=LACTOKIT_DESCRIPCIONES["1"],
+        )
+
+    # Condiciones b/c/d/e: los frascos invalidos se excluyen del calculo de H2/CH4
+    # (se enmascaran). La tabla y el grafico del informe siguen mostrando todos los
+    # valores sin alterar.
     h2_validos = [None if inv else v for v, inv in zip(h2, invalidos)]
     ch4_validos = [None if inv else v for v, inv in zip(ch4, invalidos)]
 
     max_delta_h2 = _max_incremento_h2(h2_validos)
     max_ch4 = _max_ch4(ch4_validos)
-    h2_elevado = max_delta_h2 is not None and max_delta_h2 >= 20
-    ch4_elevado = max_ch4 is not None and max_ch4 >= 10
+    h2_elevado = max_delta_h2 is not None and max_delta_h2 > 20   # estricto: > 20
+    ch4_elevado = max_ch4 is not None and max_ch4 > 10            # estricto: > 10
 
     if h2_elevado and ch4_elevado:
-        valoracion = "2"
+        base = "4"   # d: b y c en simultaneo
     elif h2_elevado:
-        valoracion = "3"
+        base = "2"   # b: elevacion de H2
     elif ch4_elevado:
-        valoracion = "4"
-    elif max_delta_h2 is not None or max_ch4 is not None:
-        valoracion = "1"
+        base = "3"   # c: elevacion de CH4
     else:
-        valoracion = "ERROR"
+        base = "5"   # e: no compatible
+
+    # Condicion "f": exactamente 3 frascos con CO2 < 1,4% -> valoracion base (b/c/d/e)
+    # mas el texto extra de "repetir prueba" (valoracion 6).
+    if n_invalidos == 3:
+        return ValoracionLactokit(
+            valoracion=f"6{LACTOKIT_LETRA_CONDICION[base]}",
+            descripcion=f"{LACTOKIT_DESCRIPCIONES[base]}\n{LACTOKIT_TEXTO_EXTRA_CO2}",
+        )
 
     return ValoracionLactokit(
-        valoracion=valoracion,
-        descripcion=LACTOKIT_DESCRIPCIONES[valoracion],
+        valoracion=base,
+        descripcion=LACTOKIT_DESCRIPCIONES[base],
     )
 
 

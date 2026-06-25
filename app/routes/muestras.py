@@ -56,7 +56,7 @@ async def cargar_txt(
     usuario: Usuario = Depends(get_current_user),
 ):
     contenido = (await request.body()).decode("utf-8")
-    resultado = cargar_resultados_txt(db, contenido, usuario_id=usuario.username)
+    resultado = await cargar_resultados_txt(db, contenido, usuario_id=usuario.username)
     return CargaTxtResponse(**resultado)
 
 
@@ -100,14 +100,18 @@ async def validar(
 
 
 @router.post("/{protocolo}/reiniciar", response_model=MuestraResponse)
-def reiniciar(
+async def reiniciar(
     protocolo: str,
     db: Session = Depends(get_db),
     usuario: Usuario = Depends(get_current_user),
 ):
     try:
-        muestra = muestras_svc.reiniciar_muestra(db, protocolo, usuario_id=usuario.username)
-        return muestra_to_response(muestra)
+        muestra, advertencia = await muestras_svc.reiniciar_muestra(
+            db, protocolo, usuario_id=usuario.username
+        )
+        respuesta = muestra_to_response(muestra)
+        respuesta.advertencia = advertencia
+        return respuesta
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

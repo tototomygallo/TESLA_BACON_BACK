@@ -29,11 +29,22 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
             resultado_lactokit = obtener_resultado_lactokit(db, m.protocolo)
     valores_lactokit = leer_valores_lactokit(resultado_lactokit)
     if valores_lactokit and resultado_lactokit:
+        # La valoración "6" se persiste como "6b"/"6c"/"6d"/"6e" para guardar qué
+        # condición (b/c/d/e) la originó. La API la expone como valoracion="6" + la
+        # letra por separado en `condicion`.
+        valoracion_guardada = resultado_lactokit.valoracion or ""
+        if valoracion_guardada[:1] == "6" and len(valoracion_guardada) > 1:
+            valoracion_api = "6"
+            condicion = valoracion_guardada[1]
+        else:
+            valoracion_api = valoracion_guardada
+            condicion = None
         resultados_lactokit = ResultadoLactokitSchema(
             h2=valores_lactokit["h2"],
             ch4=valores_lactokit["ch4"],
             co2=valores_lactokit["co2"],
-            valoracion=resultado_lactokit.valoracion,
+            valoracion=valoracion_api,
+            condicion=condicion,
             descripcion=resultado_lactokit.descripcion,
             cargadoEn=resultado_lactokit.cargado_en or "",
         )

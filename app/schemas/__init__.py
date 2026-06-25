@@ -33,6 +33,7 @@ class ResultadoLactokitSchema(BaseModel):
     ch4: list[Any]
     co2: list[Any]
     valoracion: str
+    condicion: Optional[str] = None  # "b"|"c"|"d"|"e" solo cuando valoracion == "6"
     descripcion: str
     cargadoEn: str
 

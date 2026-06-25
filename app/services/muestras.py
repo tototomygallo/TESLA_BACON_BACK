@@ -212,25 +212,29 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
     return {"ingresadas": ingresadas, "rechazadas": rechazadas, "duplicadas": duplicadas}
 
 
-async def validar_muestra(
-    db: Session, protocolo: str, usuario_id: str | None = None
-) -> tuple[Muestra, str | None]:
-    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
-    if not muestra:
-        raise ValueError("Muestra no encontrada")
-    if muestra.estado != "en_validacion":
-        raise ValueError("Solo se pueden validar muestras en estado 'En validación'")
-    if muestra.intentos_fallidos >= 2:
-        raise ValueError("No es posible generar el informe requerido con esta muestra")
+def _marcar_pdf_enviado(muestra: Muestra, verificacion_bacon: dict) -> None:
+    """Marca en la muestra que el PDF fue generado, subido y verificado en BACON."""
+    muestra.bacon_pdf_enviado = True
+    muestra.pdf_generado = True
+    muestra.pdf_generado_en = datetime.now()
+    muestra.pdf_verificado_bacon = True
+    muestra.pdf_verificacion_bacon = verificacion_bacon
 
-    # Generar el PDF del informe
+
+async def _subir_informe_a_bacon(
+    muestra: Muestra, *, validacion_clinica: bool
+) -> tuple[dict, dict, bytes]:
+    """Genera el PDF, lo sube a BACON y verifica la subida.
+
+    Devuelve (resultado_subida, verificacion, pdf_bytes).
+    Lanza ValueError si BACON rechaza el PDF o no se puede verificar; el caller
+    decide si eso corta el flujo (validar) o solo se registra (anulación en lote).
+    """
     from app.services.pdf_generator import generar_informe_pdf
-    pdf_bytes = generar_informe_pdf(muestra)
 
-    # Subir el PDF a BACON (el estado en BACON cambia a 'completado' automáticamente)
+    pdf_bytes = generar_informe_pdf(muestra, validacion_clinica=validacion_clinica)
+
     resultado_bacon = await bacon.subir_pdf_a_bacon(muestra.codigo_taukit, pdf_bytes)
-    #if not resultado_bacon:
-    #    raise ValueError("No se pudo subir el PDF a BACON. La muestra no fue completada.")
     if isinstance(resultado_bacon, dict) and resultado_bacon.get("success") is False:
         detalle_bacon = resultado_bacon.get("error") or "BACON rechazo el PDF"
         raise ValueError(f"No se pudo subir el PDF a BACON: {detalle_bacon}")
@@ -244,15 +248,54 @@ async def validar_muestra(
         )
         raise ValueError(f"El PDF fue enviado pero no pudo verificarse en BACON: {detalle_bacon}")
 
+    return resultado_bacon, verificacion_bacon, pdf_bytes
+
+
+async def _enviar_informe_anulada(muestra: Muestra) -> dict:
+    """Envía a BACON el informe 'sin validación clínica' de una muestra anulada.
+
+    Mismo flujo que una validada (subir PDF + verificar + mail), pero TOLERANTE a
+    fallos: nunca lanza. Si la muestra no tiene resultados para el informe, también
+    devuelve enviado=False. Un fallo de envío nunca debe cortar el flujo que la anuló.
+    """
+    try:
+        _resultado, verificacion_bacon, pdf_bytes = await _subir_informe_a_bacon(
+            muestra, validacion_clinica=False
+        )
+    except Exception as exc:  # noqa: BLE001 - un fallo de envío nunca debe cortar el flujo
+        print(f"[ANULADA] No se pudo enviar a BACON {muestra.protocolo}: {exc}")
+        return {"enviado": False, "error": str(exc)}
+
+    advertencia_mail = _enviar_informe_por_mail(muestra, pdf_bytes)
+    _marcar_pdf_enviado(muestra, verificacion_bacon)
+    return {
+        "enviado": True,
+        "mail_enviado": advertencia_mail is None,
+        "mail_advertencia": advertencia_mail,
+    }
+
+
+async def validar_muestra(
+    db: Session, protocolo: str, usuario_id: str | None = None
+) -> tuple[Muestra, str | None]:
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise ValueError("Muestra no encontrada")
+    if muestra.estado != "en_validacion":
+        raise ValueError("Solo se pueden validar muestras en estado 'En validación'")
+    if muestra.intentos_fallidos >= 2:
+        raise ValueError("No es posible generar el informe requerido con esta muestra")
+
+    # Generar + subir + verificar el PDF en BACON (lanza si BACON rechaza o no verifica).
+    resultado_bacon, verificacion_bacon, pdf_bytes = await _subir_informe_a_bacon(
+        muestra, validacion_clinica=True
+    )
+
     # Una vez verificada la subida en BACON, se envía el informe por mail.
     advertencia_mail = _enviar_informe_por_mail(muestra, pdf_bytes)
 
     estado_anterior = muestra.estado
-    muestra.bacon_pdf_enviado = True
-    muestra.pdf_generado = True
-    muestra.pdf_generado_en = datetime.now()
-    muestra.pdf_verificado_bacon = True
-    muestra.pdf_verificacion_bacon = verificacion_bacon
+    _marcar_pdf_enviado(muestra, verificacion_bacon)
 
     # Marcar como completado en nuestro sistema
     muestra.estado = "completado"
@@ -276,7 +319,9 @@ async def validar_muestra(
     return muestra, advertencia_mail
 
 
-def reiniciar_muestra(db: Session, protocolo: str, usuario_id: str | None = None) -> Muestra:
+async def reiniciar_muestra(
+    db: Session, protocolo: str, usuario_id: str | None = None
+) -> tuple[Muestra, str | None]:
     muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
     if not muestra:
         raise ValueError("Muestra no encontrada")
@@ -292,6 +337,38 @@ def reiniciar_muestra(db: Session, protocolo: str, usuario_id: str | None = None
     estado_anterior = muestra.estado
     intentos_anteriores = muestra.intentos_fallidos
 
+    # Cada reinicio consume una medición del TauKit (igual que un error de equipo).
+    muestra.intentos_fallidos += 1
+
+    if muestra.intentos_fallidos >= 2:
+        # Se agotaron las 2 mediciones del TauKit -> anular. Se conservan los últimos
+        # resultados cargados para poder emitir el informe, que se envía a BACON igual
+        # que cualquier otra anulada (informe sin validación clínica).
+        muestra.estado = EstadoMuestra.anulado
+        muestra.tiene_error = True
+        envio_anulada = await _enviar_informe_anulada(muestra)
+        registrar_auditoria(
+            db,
+            accion="reinicio_agota_taukit",
+            muestra=muestra,
+            usuario_id=usuario_id,
+            estado_anterior=estado_anterior,
+            estado_nuevo=muestra.estado,
+            detalle="El reinicio agotó las 2 mediciones del TauKit: muestra anulada",
+            datos={
+                "intentos_anteriores": intentos_anteriores,
+                "intentos_nuevos": muestra.intentos_fallidos,
+                "consume_intento": True,
+                "envio_anulada": envio_anulada,
+            },
+        )
+        db.commit()
+        # advertencia = detalle solo si el informe se subió/verificó en BACON pero el
+        # mail falló (mismo contrato que validar_muestra). None en cualquier otro caso.
+        advertencia = envio_anulada.get("mail_advertencia")
+        return muestra, advertencia
+
+    # Reinicio normal: queda lista para una nueva medición/carga.
     muestra.estado = "en_proceso"
     muestra.tiene_error = False
     muestra.resultado_basal_co2 = None
@@ -316,11 +393,11 @@ def reiniciar_muestra(db: Session, protocolo: str, usuario_id: str | None = None
         datos={
             "intentos_anteriores": intentos_anteriores,
             "intentos_nuevos": muestra.intentos_fallidos,
-            "consume_intento": False,
+            "consume_intento": True,
         },
     )
     db.commit()
-    return muestra
+    return muestra, None
 
 
 def imprimir_etiquetas(db: Session, protocolo: str, usuario_id: str | None = None) -> Muestra:

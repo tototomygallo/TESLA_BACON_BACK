@@ -4,10 +4,11 @@ from sqlalchemy.orm import Session
 from app.models import EstadoMuestra, Muestra
 from app.services.auditoria import registrar_auditoria
 from app.services.estudios import TIPO_LACTOKIT
+from app.services.muestras import _enviar_informe_anulada
 from app.services.txt_parser import parsear_txt
 
 
-def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = None) -> dict:
+async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = None) -> dict:
     """
     Parsea el TXT del HeliFan y carga resultados en las muestras correspondientes.
     Misma lógica que el mockApi del front.
@@ -68,6 +69,7 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
         muestra.resultado_test_value = r.test_value
         muestra.resultado_cargado_en = ahora
 
+        envio_anulada = None
         if r.tiene_error_equipo:
             muestra.tiene_error = True
             muestra.intentos_fallidos += 1
@@ -75,6 +77,9 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
                 muestra.estado = EstadoMuestra.anulado
                 anuladas.append(muestra.protocolo)
                 accion = "txt_error_anulado"
+                # La anulada se envía a BACON igual que una validada (informe sin
+                # validación clínica). Tolerante a fallos: no corta el lote.
+                envio_anulada = await _enviar_informe_anulada(muestra)
             else:
                 con_error_equipo.append(muestra.protocolo)
                 accion = "txt_error_equipo"
@@ -104,6 +109,7 @@ def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = 
                 "tiene_error_equipo": r.tiene_error_equipo,
                 "intentos_anteriores": intentos_anteriores,
                 "intentos_nuevos": muestra.intentos_fallidos,
+                "envio_anulada": envio_anulada,
             },
         )
 
