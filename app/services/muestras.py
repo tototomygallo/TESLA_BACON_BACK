@@ -113,6 +113,11 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
         )
 
         if muestra_existente:
+            # Ya estaba ingresado y BACON ya lo tiene como recibido -> duplicado.
+            # No se reprocesa ni se vuelve a llamar a cambiarEstadoRecibido (daría 400).
+            if muestra_existente.bacon_recibido:
+                duplicadas.append(codigo)
+                continue
             estado_anterior = muestra_existente.estado
             muestra_existente.estado = "recibido"
             muestra_existente.fecha_ingreso = ahora
@@ -182,30 +187,51 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
             )
 
     # BACON es parte obligatoria del ingreso: si falla, no se confirma nada local.
-    for muestra in ingresadas:
+    # Excepción: si BACON responde 400 porque el TauKit YA está recibido, se trata como
+    # duplicado y no se aborta el lote (el resto se ingresa normal).
+    for muestra in list(ingresadas):
         resultado = await bacon.marcar_recibido_en_bacon(muestra.codigo_taukit)
-        if not resultado or resultado.get("success") is not True:
-            if isinstance(resultado, dict):
-                detalle_bacon = (
-                    resultado.get("error")
-                    or resultado.get("message")
-                    or resultado.get("mensaje")
-                    or "BACON no devolvio success=true"
-                )
-            else:
-                detalle_bacon = "BACON no devolvio una respuesta valida"
-            db.rollback()
-            raise ValueError(
-                f"No se pudo cambiar el estado en BACON para {muestra.codigo_taukit}: {detalle_bacon}"
+
+        if resultado and resultado.get("success") is True:
+            muestra.bacon_recibido = True
+            registrar_auditoria(
+                db,
+                accion="bacon_recibido_notificado",
+                muestra=muestra,
+                usuario_id="sistema",
+                detalle="BACON fue notificado como recibido",
+                datos=resultado,
             )
-        muestra.bacon_recibido = True
-        registrar_auditoria(
-            db,
-            accion="bacon_recibido_notificado",
-            muestra=muestra,
-            usuario_id="sistema",
-            detalle="BACON fue notificado como recibido",
-            datos=resultado,
+            continue
+
+        # El TauKit ya estaba recibido en BACON (400): es un duplicado, no un error.
+        if isinstance(resultado, dict) and resultado.get("status") == 400:
+            ingresadas.remove(muestra)
+            duplicadas.append(muestra.codigo_taukit)
+            muestra.bacon_recibido = True
+            registrar_auditoria(
+                db,
+                accion="ingreso_duplicado",
+                muestra=muestra,
+                usuario_id=usuario_id,
+                detalle="El TauKit ya estaba recibido en BACON: se reporta como duplicado",
+                datos=resultado,
+            )
+            continue
+
+        # Cualquier otro fallo de BACON sigue siendo bloqueante para todo el lote.
+        if isinstance(resultado, dict):
+            detalle_bacon = (
+                resultado.get("error")
+                or resultado.get("message")
+                or resultado.get("mensaje")
+                or "BACON no devolvio success=true"
+            )
+        else:
+            detalle_bacon = "BACON no devolvio una respuesta valida"
+        db.rollback()
+        raise ValueError(
+            f"No se pudo cambiar el estado en BACON para {muestra.codigo_taukit}: {detalle_bacon}"
         )
     db.commit()
 

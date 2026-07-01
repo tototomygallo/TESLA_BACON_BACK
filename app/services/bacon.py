@@ -53,7 +53,18 @@ async def marcar_recibido_en_bacon(numero_serie: str) -> dict:
                     "Content-Type": "application/json",
                 },
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                cuerpo = response.text[:500]
+                print(
+                    f"[BACON] cambiarEstadoRecibido {numero_serie} -> HTTP "
+                    f"{response.status_code}. Respuesta BACON: {cuerpo!r}"
+                )
+                return {
+                    "success": False,
+                    "status": response.status_code,
+                    "error": f"BACON respondio HTTP {response.status_code}: {cuerpo}",
+                    "raw": cuerpo,
+                }
             data = response.json()
             if isinstance(data, dict) and data.get("success") is False:
                 print(f"[BACON] Error al marcar recibido {numero_serie}: {data}")
