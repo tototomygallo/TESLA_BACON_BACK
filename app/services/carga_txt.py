@@ -1,3 +1,5 @@
+import hashlib
+import os
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -7,12 +9,62 @@ from app.services.estudios import TIPO_LACTOKIT
 from app.services.muestras import _enviar_informe_anulada
 from app.services.txt_parser import parsear_txt
 
+# Firma del último TXT cargado, para detectar re-subidas del mismo archivo.
+# Se guarda en un archivo (no en BD) para no depender de migraciones.
+_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
+)
+_ULTIMO_TXT_SIG = os.path.join(_DATA_DIR, "ultimo_txt.sig")
+
+
+def _firma_txt(contenido: str) -> str:
+    """Huella del contenido, normalizando fin de línea y espacios al borde."""
+    normalizado = contenido.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha256(normalizado.encode("utf-8")).hexdigest()
+
+
+def _leer_ultima_firma() -> str | None:
+    try:
+        with open(_ULTIMO_TXT_SIG, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _guardar_ultima_firma(firma: str) -> None:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    with open(_ULTIMO_TXT_SIG, "w", encoding="utf-8") as f:
+        f.write(firma)
+
+
+def _respuesta_vacia(txt_duplicado: bool = False) -> dict:
+    return {
+        "cargadosOk": [],
+        "cargadosReintentando": [],
+        "conErrorEquipo": [],
+        "anuladas": [],
+        "noEncontrados": [],
+        "yaCompletados": [],
+        "yaAnuladas": [],
+        "requierenReinicio": [],
+        "controles": 0,
+        "erroresParseo": 0,
+        "txtDuplicado": txt_duplicado,
+    }
+
 
 async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = None) -> dict:
     """
     Parsea el TXT del HeliFan y carga resultados en las muestras correspondientes.
     Misma lógica que el mockApi del front.
     """
+    # Si es exactamente el mismo TXT que la última carga, no se procesa nada:
+    # evita que re-suban el mismo archivo por error.
+    firma = _firma_txt(contenido)
+    if firma == _leer_ultima_firma():
+        return _respuesta_vacia(txt_duplicado=True)
+
     parseado = parsear_txt(contenido)
     ahora = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -115,6 +167,9 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
 
     db.commit()
 
+    # TXT distinto al anterior y ya procesado: se guarda como "último" (reemplaza al previo).
+    _guardar_ultima_firma(firma)
+
     return {
         "cargadosOk": cargados_ok,
         "cargadosReintentando": cargados_reintentando,
@@ -126,4 +181,5 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
         "requierenReinicio": requieren_reinicio,
         "controles": parseado.controles,
         "erroresParseo": parseado.errores,
+        "txtDuplicado": False,
     }
