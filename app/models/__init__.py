@@ -13,6 +13,7 @@ class EstadoMuestra(str, enum.Enum):
     recibido = "recibido"
     en_proceso = "en_proceso"
     en_validacion = "en_validacion"
+    pendiente_anulacion = "pendiente_anulacion"
     completado = "completado"
     anulado = "anulado"
     eliminado = "eliminado"

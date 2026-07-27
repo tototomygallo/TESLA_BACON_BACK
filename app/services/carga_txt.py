@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from app.models import EstadoMuestra, Muestra
 from app.services.auditoria import registrar_auditoria
 from app.services.estudios import TIPO_LACTOKIT
-from app.services.muestras import _enviar_informe_anulada
 from app.services.txt_parser import parsear_txt
 
 # Firma del último TXT cargado, para detectar re-subidas del mismo archivo.
@@ -44,6 +43,7 @@ def _respuesta_vacia(txt_duplicado: bool = False) -> dict:
         "cargadosReintentando": [],
         "conErrorEquipo": [],
         "anuladas": [],
+        "pendientesAnulacion": [],
         "noEncontrados": [],
         "yaCompletados": [],
         "yaAnuladas": [],
@@ -72,6 +72,7 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
     cargados_reintentando: list[str] = []
     con_error_equipo: list[str] = []
     anuladas: list[str] = []
+    pendientes_anulacion: list[str] = []
     no_encontrados: list[str] = []
     ya_completados: list[str] = []
     ya_anuladas: list[str] = []
@@ -89,6 +90,10 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
             continue
 
         if muestra.estado == EstadoMuestra.anulado:
+            ya_anuladas.append(muestra.protocolo)
+            continue
+
+        if muestra.estado == EstadoMuestra.pendiente_anulacion:
             ya_anuladas.append(muestra.protocolo)
             continue
 
@@ -121,17 +126,15 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
         muestra.resultado_test_value = r.test_value
         muestra.resultado_cargado_en = ahora
 
-        envio_anulada = None
+        envio_bacon = False
         if r.tiene_error_equipo:
             muestra.tiene_error = True
             muestra.intentos_fallidos += 1
             if muestra.intentos_fallidos >= 2:
-                muestra.estado = EstadoMuestra.anulado
-                anuladas.append(muestra.protocolo)
-                accion = "txt_error_anulado"
-                # La anulada se envía a BACON igual que una validada (informe sin
-                # validación clínica). Tolerante a fallos: no corta el lote.
-                envio_anulada = await _enviar_informe_anulada(muestra)
+                muestra.estado = EstadoMuestra.pendiente_anulacion
+                pendientes_anulacion.append(muestra.protocolo)
+                accion = "txt_error_pendiente_anulacion"
+                # No se informa a BACON hasta que el usuario confirme la anulacion.
             else:
                 con_error_equipo.append(muestra.protocolo)
                 accion = "txt_error_equipo"
@@ -161,7 +164,7 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
                 "tiene_error_equipo": r.tiene_error_equipo,
                 "intentos_anteriores": intentos_anteriores,
                 "intentos_nuevos": muestra.intentos_fallidos,
-                "envio_anulada": envio_anulada,
+                "envio_bacon": envio_bacon,
             },
         )
 
@@ -175,6 +178,7 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
         "cargadosReintentando": cargados_reintentando,
         "conErrorEquipo": con_error_equipo,
         "anuladas": anuladas,
+        "pendientesAnulacion": pendientes_anulacion,
         "noEncontrados": no_encontrados,
         "yaCompletados": ya_completados,
         "yaAnuladas": ya_anuladas,

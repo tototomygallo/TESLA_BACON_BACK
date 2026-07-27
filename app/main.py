@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import SessionLocal
 from app.models import Usuario
-from app.routes import admin, auth, bacon_proxy, configuracion, muestras, resumen
+from app.routes import admin, auth, bacon_proxy, configuracion, muestras, operacion, resumen
 from app.services.bacon_retry import reintentar_pendientes
 from app.services.discrepancias import eliminar_discrepancias_vencidas
 
@@ -63,6 +63,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(bacon_proxy.router, prefix="/api")
 app.include_router(configuracion.router, prefix="/api")
 app.include_router(muestras.router, prefix="/api")
+app.include_router(operacion.router, prefix="/api")
 app.include_router(resumen.router, prefix="/api")
 
 

@@ -71,6 +71,6 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
         resultados=resultados,
         resultadosLactokit=resultados_lactokit,
         pdfGenerado=m.pdf_generado,
-        pdfVerificado=bool(getattr(m, "pdf_verificado_bacon", False)),
-        pdfVerificacion=getattr(m, "pdf_verificacion_bacon", None),
+        pdfVerificado=bool(m.bacon_pdf_enviado),
+        pdfVerificacion=None,
     )

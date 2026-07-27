@@ -1,8 +1,9 @@
 from datetime import datetime
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Consecutivo, EstadoMuestra, Muestra, Discrepancia
+from app.models import Consecutivo, EstadoMuestra, Muestra, Discrepancia, MuestraAuditoria
 from app.services import bacon
 from app.services.auditoria import registrar_auditoria
 from app.services.estudios import (
@@ -13,9 +14,17 @@ from app.services.estudios import (
 )
 
 import smtplib
+import json
 from email.message import EmailMessage
 
-def _enviar_informe_por_mail(muestra: Muestra, pdf_bytes: bytes) -> str | None:
+ACCION_MARCAR_MAL_ANULADO = "marcar_mal_anulado"
+ACCION_OPERACION_REVERTIR_EN_PROCESO = "operacion_revertir_a_en_proceso"
+ACCION_VALORES_CORREGIDOS = "valores_corregidos"
+ACCION_INFORME_REGENERADO = "informe_regenerado"
+
+def _enviar_informe_por_mail(
+    muestra: Muestra, pdf_bytes: bytes, *, asunto: str | None = None
+) -> str | None:
     """Envía el informe en PDF por mail a BACON.
 
     No interrumpe el flujo si falla. Devuelve None si el envío fue exitoso,
@@ -24,7 +33,7 @@ def _enviar_informe_por_mail(muestra: Muestra, pdf_bytes: bytes) -> str | None:
     settings = get_settings()
     try:
         msg = EmailMessage()
-        msg["Subject"] = f"Informe TauKit {muestra.codigo_taukit}"
+        msg["Subject"] = asunto or f"Informe TauKit {muestra.codigo_taukit}"
         msg["From"] = settings.smtp_from_email
         msg["To"] = settings.bacon_contact_email
 
@@ -113,6 +122,10 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
         )
 
         if muestra_existente:
+            datos_bacon_existente = bacon_por_serie.get(codigo) or {}
+            fecha_carga_bacon = datos_bacon_existente.get("fecha_carga") or ""
+            if fecha_carga_bacon and not muestra_existente.fecha_toma_muestra:
+                muestra_existente.fecha_toma_muestra = fecha_carga_bacon
             # Ya estaba ingresado y BACON ya lo tiene como recibido -> duplicado.
             # No se reprocesa ni se vuelve a llamar a cambiarEstadoRecibido (daría 400).
             if muestra_existente.bacon_recibido:
@@ -131,6 +144,7 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
                 estado_anterior=estado_anterior,
                 estado_nuevo=muestra_existente.estado,
                 detalle="Muestra existente reingresada desde lote",
+                datos={"fecha_carga_bacon": fecha_carga_bacon},
             )
 
             ingresadas.append(muestra_existente)
@@ -157,7 +171,7 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
             tipo_estudio=tipo_estudio,
             paciente_nombre=nombre, paciente_apellido=apellido,
             paciente_dni=paciente.get("documento") or "",
-            fecha_toma_muestra="",
+            fecha_toma_muestra=datos_bacon.get("fecha_carga") or "",
             estudio_codigo=estudio_codigo, estudio_nombre=estudio_nombre,
             sucursal_codigo=settings.sucursal_codigo, sucursal_nombre=settings.sucursal_nombre,
             estado="recibido", fecha_ingreso=ahora,
@@ -171,7 +185,10 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
             estado_anterior=None,
             estado_nuevo=muestra.estado,
             detalle="Muestra ingresada desde lote",
-            datos={"codigo_recibido": codigo},
+            datos={
+                "codigo_recibido": codigo,
+                "fecha_carga_bacon": datos_bacon.get("fecha_carga") or "",
+            },
         )
         ingresadas.append(muestra)
 
@@ -243,12 +260,22 @@ def _marcar_pdf_enviado(muestra: Muestra, verificacion_bacon: dict) -> None:
     muestra.bacon_pdf_enviado = True
     muestra.pdf_generado = True
     muestra.pdf_generado_en = datetime.now()
-    muestra.pdf_verificado_bacon = True
-    muestra.pdf_verificacion_bacon = verificacion_bacon
+
+
+def _limpiar_resultados_taukit(muestra: Muestra) -> None:
+    muestra.resultado_basal_co2 = None
+    muestra.resultado_post_co2 = None
+    muestra.resultado_basal_delta = None
+    muestra.resultado_post_delta = None
+    muestra.resultado_test_value = None
+    muestra.resultado_cargado_en = None
+    muestra.pdf_generado = False
+    muestra.pdf_generado_en = None
+    muestra.bacon_pdf_enviado = False
 
 
 async def _subir_informe_a_bacon(
-    muestra: Muestra, *, validacion_clinica: bool
+    muestra: Muestra, *, validacion_clinica: bool, sin_restriccion: bool = False
 ) -> tuple[dict, dict, bytes]:
     """Genera el PDF, lo sube a BACON y verifica la subida.
 
@@ -260,7 +287,12 @@ async def _subir_informe_a_bacon(
 
     pdf_bytes = generar_informe_pdf(muestra, validacion_clinica=validacion_clinica)
 
-    resultado_bacon = await bacon.subir_pdf_a_bacon(muestra.codigo_taukit, pdf_bytes)
+    if sin_restriccion:
+        resultado_bacon = await bacon.subir_pdf_sin_restriccion_a_bacon(
+            muestra.codigo_taukit, pdf_bytes
+        )
+    else:
+        resultado_bacon = await bacon.subir_pdf_a_bacon(muestra.codigo_taukit, pdf_bytes)
     if isinstance(resultado_bacon, dict) and resultado_bacon.get("success") is False:
         detalle_bacon = resultado_bacon.get("error") or "BACON rechazo el PDF"
         raise ValueError(f"No se pudo subir el PDF a BACON: {detalle_bacon}")
@@ -353,7 +385,11 @@ async def reiniciar_muestra(
         raise ValueError("Muestra no encontrada")
     if muestra.estado == EstadoMuestra.eliminado:
         raise ValueError("La muestra fue eliminada por administración")
-    if muestra.estado in (EstadoMuestra.anulado, EstadoMuestra.cancelado):
+    if muestra.estado in (
+        EstadoMuestra.anulado,
+        EstadoMuestra.cancelado,
+        EstadoMuestra.pendiente_anulacion,
+    ):
         raise ValueError("La muestra está anulada: el TauKit agotó sus 2 mediciones")
     if muestra.estado == "completado":
         raise ValueError("No se puede reiniciar una muestra completada")
@@ -367,44 +403,32 @@ async def reiniciar_muestra(
     muestra.intentos_fallidos += 1
 
     if muestra.intentos_fallidos >= 2:
-        # Se agotaron las 2 mediciones del TauKit -> anular. Se conservan los últimos
-        # resultados cargados para poder emitir el informe, que se envía a BACON igual
-        # que cualquier otra anulada (informe sin validación clínica).
-        muestra.estado = EstadoMuestra.anulado
+        # Se agotaron las 2 mediciones del TauKit. No se informa a BACON hasta que
+        # el usuario confirme la anulacion.
+        muestra.estado = EstadoMuestra.pendiente_anulacion
         muestra.tiene_error = True
-        envio_anulada = await _enviar_informe_anulada(muestra)
         registrar_auditoria(
             db,
-            accion="reinicio_agota_taukit",
+            accion="reinicio_pendiente_anulacion",
             muestra=muestra,
             usuario_id=usuario_id,
             estado_anterior=estado_anterior,
             estado_nuevo=muestra.estado,
-            detalle="El reinicio agotó las 2 mediciones del TauKit: muestra anulada",
+            detalle="El reinicio agoto las 2 mediciones del TauKit: pendiente de anulacion",
             datos={
                 "intentos_anteriores": intentos_anteriores,
                 "intentos_nuevos": muestra.intentos_fallidos,
                 "consume_intento": True,
-                "envio_anulada": envio_anulada,
+                "envio_bacon": False,
             },
         )
         db.commit()
-        # advertencia = detalle solo si el informe se subió/verificó en BACON pero el
-        # mail falló (mismo contrato que validar_muestra). None en cualquier otro caso.
-        advertencia = envio_anulada.get("mail_advertencia")
-        return muestra, advertencia
+        return muestra, None
 
     # Reinicio normal: queda lista para una nueva medición/carga.
     muestra.estado = "en_proceso"
     muestra.tiene_error = False
-    muestra.resultado_basal_co2 = None
-    muestra.resultado_post_co2 = None
-    muestra.resultado_basal_delta = None
-    muestra.resultado_post_delta = None
-    muestra.resultado_test_value = None
-    muestra.resultado_cargado_en = None
-    muestra.pdf_generado = False
-    muestra.pdf_generado_en = None
+    _limpiar_resultados_taukit(muestra)
     if muestra.tipo_estudio == TIPO_LACTOKIT:
         from app.models import LactokitResultado
         db.query(LactokitResultado).filter_by(protocolo=protocolo).delete()
@@ -424,6 +448,447 @@ async def reiniciar_muestra(
     )
     db.commit()
     return muestra, None
+
+
+def listar_pendientes_anulacion(db: Session) -> list[Muestra]:
+    derivada_a_revision = (
+        db.query(MuestraAuditoria.id)
+        .filter(
+            MuestraAuditoria.protocolo == Muestra.protocolo,
+            MuestraAuditoria.accion == ACCION_MARCAR_MAL_ANULADO,
+        )
+        .exists()
+    )
+    return (
+        db.query(Muestra)
+        .filter(
+            Muestra.estado == EstadoMuestra.pendiente_anulacion,
+            Muestra.bacon_pdf_enviado == False,  # noqa: E712
+            Muestra.tipo_estudio != TIPO_LACTOKIT,
+            ~derivada_a_revision,
+        )
+        .order_by(Muestra.updated_at.desc(), Muestra.fecha_ingreso.desc())
+        .all()
+    )
+
+
+def _json_auditoria(datos: str | None) -> dict:
+    if not datos:
+        return {}
+    try:
+        parsed = json.loads(datos)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _ultima_marca_mal_anulado(db: Session, protocolo: str) -> MuestraAuditoria | None:
+    return (
+        db.query(MuestraAuditoria)
+        .filter(
+            MuestraAuditoria.protocolo == protocolo,
+            MuestraAuditoria.accion == ACCION_MARCAR_MAL_ANULADO,
+        )
+        .order_by(MuestraAuditoria.fecha.desc(), MuestraAuditoria.id.desc())
+        .first()
+    )
+
+
+def marcar_mal_anulado(
+    db: Session,
+    protocolo: str,
+    *,
+    motivo: str,
+    detalle: str | None = None,
+    usuario_id: str | None = None,
+    usuario_id_body: str | None = None,
+) -> Muestra:
+    motivo_limpio = motivo.strip()
+    detalle_limpio = (detalle or "").strip() or None
+    if motivo_limpio not in ("Error en la carga de resultados", "Otro"):
+        raise ValueError("El motivo debe ser 'Error en la carga de resultados' u 'Otro'")
+    if motivo_limpio == "Otro" and not detalle_limpio:
+        raise ValueError("El detalle es obligatorio cuando el motivo es 'Otro'")
+
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise ValueError("Muestra no encontrada")
+    if muestra.estado != EstadoMuestra.pendiente_anulacion or muestra.bacon_pdf_enviado:
+        raise ValueError("Solo se pueden marcar como mal anuladas muestras pendientes no informadas a BACON")
+    if muestra.tipo_estudio == TIPO_LACTOKIT:
+        raise ValueError("La marca de mal anulado aplica solo a Taukit")
+
+    registrar_auditoria(
+        db,
+        accion=ACCION_MARCAR_MAL_ANULADO,
+        muestra=muestra,
+        usuario_id=usuario_id,
+        estado_anterior=muestra.estado,
+        estado_nuevo=muestra.estado,
+        detalle=motivo_limpio,
+        datos={
+            "motivo": motivo_limpio,
+            "detalle": detalle_limpio,
+            "usuario_marca": usuario_id,
+            "usuario_id_body": usuario_id_body,
+            "fecha_marca": datetime.now().isoformat(timespec="seconds"),
+            "envio_bacon": False,
+        },
+    )
+    db.commit()
+    return muestra
+
+
+def listar_mal_anulados_pendientes_revision(db: Session) -> list[dict]:
+    filas = (
+        db.query(MuestraAuditoria, Muestra)
+        .join(Muestra, MuestraAuditoria.protocolo == Muestra.protocolo)
+        .filter(
+            MuestraAuditoria.accion == ACCION_MARCAR_MAL_ANULADO,
+            Muestra.estado == EstadoMuestra.pendiente_anulacion,
+            Muestra.bacon_pdf_enviado == False,  # noqa: E712
+        )
+        .order_by(MuestraAuditoria.fecha.desc(), MuestraAuditoria.id.desc())
+        .all()
+    )
+
+    protocolos_vistos: set[str] = set()
+    pendientes: list[dict] = []
+    for auditoria, muestra in filas:
+        if muestra.protocolo in protocolos_vistos:
+            continue
+        protocolos_vistos.add(muestra.protocolo)
+
+        datos = _json_auditoria(auditoria.datos)
+        pendientes.append(
+            {
+                "numeroSerie": muestra.codigo_taukit,
+                "protocolo": muestra.protocolo,
+                "paciente": {
+                    "nombre": muestra.paciente_nombre,
+                    "apellido": muestra.paciente_apellido,
+                    "dni": muestra.paciente_dni,
+                    "fechaTomaMuestra": muestra.fecha_toma_muestra,
+                },
+                "estado": muestra.estado,
+                "motivo": datos.get("motivo") or auditoria.detalle or "",
+                "detalle": datos.get("detalle"),
+                "usuarioId": auditoria.usuario_id or datos.get("usuario_marca") or "",
+                "fecha": auditoria.fecha.strftime("%Y-%m-%d %H:%M:%S") if auditoria.fecha else "",
+                "tipoEstudio": muestra.tipo_estudio or "taukit",
+                "intentosFallidos": muestra.intentos_fallidos,
+            }
+        )
+    return pendientes
+
+
+def _resultado_taukit_dict(muestra: Muestra) -> dict | None:
+    if (
+        muestra.resultado_basal_co2 is None
+        or muestra.resultado_post_co2 is None
+        or muestra.resultado_basal_delta is None
+        or muestra.resultado_post_delta is None
+        or muestra.resultado_test_value is None
+    ):
+        return None
+    return {
+        "basalCO2": muestra.resultado_basal_co2,
+        "postCO2": muestra.resultado_post_co2,
+        "basalDelta": muestra.resultado_basal_delta,
+        "postDelta": muestra.resultado_post_delta,
+        "testValue": muestra.resultado_test_value,
+        "cargadoEn": muestra.resultado_cargado_en,
+    }
+
+
+def _ultima_auditoria_accion(
+    db: Session, protocolo: str, accion: str
+) -> MuestraAuditoria | None:
+    return (
+        db.query(MuestraAuditoria)
+        .filter(MuestraAuditoria.protocolo == protocolo, MuestraAuditoria.accion == accion)
+        .order_by(MuestraAuditoria.fecha.desc(), MuestraAuditoria.id.desc())
+        .first()
+    )
+
+
+def _tiene_correccion_pendiente_informe(db: Session, protocolo: str) -> bool:
+    valores = _ultima_auditoria_accion(db, protocolo, ACCION_VALORES_CORREGIDOS)
+    if not valores:
+        return False
+    informe = _ultima_auditoria_accion(db, protocolo, ACCION_INFORME_REGENERADO)
+    if not informe:
+        return True
+    if valores.fecha and informe.fecha and valores.fecha != informe.fecha:
+        return valores.fecha > informe.fecha
+    return valores.id > informe.id
+
+
+def listar_completados_para_correccion(db: Session, q: str | None = None) -> list[dict]:
+    query = db.query(Muestra).filter(
+        Muestra.estado == EstadoMuestra.completado,
+        Muestra.tipo_estudio != TIPO_LACTOKIT,
+    )
+
+    termino = (q or "").strip()
+    if termino:
+        like = f"%{termino}%"
+        filtros = [
+            Muestra.codigo_taukit.like(like),
+            Muestra.protocolo.like(like),
+            Muestra.paciente_nombre.like(like),
+            Muestra.paciente_apellido.like(like),
+            Muestra.paciente_dni.like(like),
+            (Muestra.paciente_nombre + " " + Muestra.paciente_apellido).like(like),
+            (Muestra.paciente_apellido + " " + Muestra.paciente_nombre).like(like),
+        ]
+        try:
+            filtros.append(Muestra.resultado_test_value == float(termino.replace(",", ".")))
+        except ValueError:
+            pass
+        query = query.filter(or_(*filtros))
+
+    filas = query.order_by(Muestra.pdf_generado_en.desc(), Muestra.fecha_ingreso.desc()).limit(50).all()
+    respuesta: list[dict] = []
+    for muestra in filas:
+        resultado = _resultado_taukit_dict(muestra)
+        respuesta.append(
+            {
+                "numeroSerie": muestra.codigo_taukit,
+                "protocolo": muestra.protocolo,
+                "paciente": {
+                    "nombre": muestra.paciente_nombre,
+                    "apellido": muestra.paciente_apellido,
+                    "dni": muestra.paciente_dni,
+                    "fechaTomaMuestra": muestra.fecha_toma_muestra,
+                },
+                "estado": muestra.estado,
+                "fechaInforme": muestra.pdf_generado_en.strftime("%Y-%m-%d %H:%M:%S")
+                if muestra.pdf_generado_en
+                else "",
+                "resultados": resultado,
+            }
+        )
+    return respuesta
+
+
+def cargar_valores_correccion_completado(
+    db: Session,
+    protocolo: str,
+    *,
+    basal_co2: float,
+    post_co2: float,
+    basal_delta: float,
+    post_delta: float,
+    test_value: float,
+    usuario_id: str | None = None,
+    usuario_id_body: str | None = None,
+) -> Muestra:
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise ValueError("Muestra no encontrada")
+    if muestra.tipo_estudio == TIPO_LACTOKIT:
+        raise ValueError("La correccion de completados aplica solo a Taukit")
+    if muestra.estado != EstadoMuestra.completado:
+        raise ValueError("Solo se pueden corregir muestras Taukit completadas")
+
+    valores_anteriores = _resultado_taukit_dict(muestra)
+    valores_nuevos = {
+        "basalCO2": basal_co2,
+        "postCO2": post_co2,
+        "basalDelta": basal_delta,
+        "postDelta": post_delta,
+        "testValue": test_value,
+    }
+    ahora = datetime.now()
+    muestra.resultado_basal_co2 = basal_co2
+    muestra.resultado_post_co2 = post_co2
+    muestra.resultado_basal_delta = basal_delta
+    muestra.resultado_post_delta = post_delta
+    muestra.resultado_test_value = test_value
+    muestra.resultado_cargado_en = ahora.strftime("%Y-%m-%d %H:%M")
+    muestra.pdf_generado = False
+    muestra.pdf_generado_en = None
+    muestra.bacon_pdf_enviado = False
+    muestra.tiene_error = False
+
+    registrar_auditoria(
+        db,
+        accion=ACCION_VALORES_CORREGIDOS,
+        muestra=muestra,
+        usuario_id=usuario_id,
+        estado_anterior=muestra.estado,
+        estado_nuevo=muestra.estado,
+        detalle="Valores de muestra completada corregidos desde Operacion",
+        datos={
+            "fecha_correccion": ahora.isoformat(timespec="seconds"),
+            "usuario_id_body": usuario_id_body,
+            "valores_anteriores": valores_anteriores,
+            "valores_nuevos": valores_nuevos,
+            "envio_bacon": False,
+        },
+    )
+    db.commit()
+    return muestra
+
+
+async def generar_informe_correccion_completado(
+    db: Session,
+    protocolo: str,
+    *,
+    usuario_id: str | None = None,
+    usuario_id_body: str | None = None,
+) -> tuple[Muestra, str | None, dict]:
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise ValueError("Muestra no encontrada")
+    if muestra.tipo_estudio == TIPO_LACTOKIT:
+        raise ValueError("La correccion de completados aplica solo a Taukit")
+    if muestra.estado != EstadoMuestra.completado:
+        raise ValueError("Solo se puede regenerar informe de muestras Taukit completadas")
+    if not _tiene_correccion_pendiente_informe(db, protocolo):
+        raise ValueError("Primero deben cargarse valores corregidos")
+    if muestra.resultado_test_value is None:
+        raise ValueError("La muestra no tiene resultados corregidos cargados")
+
+    estado_anterior = muestra.estado
+    resultado_bacon, verificacion_bacon, pdf_bytes = await _subir_informe_a_bacon(
+        muestra, validacion_clinica=True, sin_restriccion=True
+    )
+    advertencia_mail = _enviar_informe_por_mail(
+        muestra,
+        pdf_bytes,
+        asunto=f"Reenvio Informe TauKit {muestra.codigo_taukit}",
+    )
+    _marcar_pdf_enviado(muestra, verificacion_bacon)
+    muestra.estado = EstadoMuestra.completado
+    muestra.tiene_error = False
+    registrar_auditoria(
+        db,
+        accion=ACCION_INFORME_REGENERADO,
+        muestra=muestra,
+        usuario_id=usuario_id,
+        estado_anterior=estado_anterior,
+        estado_nuevo=muestra.estado,
+        detalle="Informe corregido regenerado y subido a BACON",
+        datos={
+            "fecha_regeneracion": datetime.now().isoformat(timespec="seconds"),
+            "usuario_id_body": usuario_id_body,
+            "valores": _resultado_taukit_dict(muestra),
+            "endpoint_bacon": "subirPDFSinRestriccion",
+            "subida_pdf": resultado_bacon,
+            "verificacion_pdf": verificacion_bacon,
+            "mail_enviado": advertencia_mail is None,
+            "mail_advertencia": advertencia_mail,
+        },
+    )
+    db.commit()
+    return muestra, advertencia_mail, verificacion_bacon
+
+
+async def confirmar_anulacion(
+    db: Session, protocolo: str, usuario_id: str | None = None
+) -> tuple[Muestra, str | None]:
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise ValueError("Muestra no encontrada")
+    if muestra.estado != EstadoMuestra.pendiente_anulacion:
+        raise ValueError("Solo se pueden confirmar muestras pendientes de anulacion")
+    if muestra.tipo_estudio == TIPO_LACTOKIT:
+        raise ValueError("La confirmacion de anulacion aplica solo a Taukit")
+    if muestra.bacon_pdf_enviado:
+        raise ValueError("La anulacion ya fue informada a BACON")
+
+    estado_anterior = muestra.estado
+    muestra.estado = EstadoMuestra.anulado
+    muestra.tiene_error = True
+
+    try:
+        resultado_bacon, verificacion_bacon, pdf_bytes = await _subir_informe_a_bacon(
+            muestra, validacion_clinica=False
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+    advertencia_mail = _enviar_informe_por_mail(muestra, pdf_bytes)
+    _marcar_pdf_enviado(muestra, verificacion_bacon)
+    registrar_auditoria(
+        db,
+        accion="confirmar_anulacion",
+        muestra=muestra,
+        usuario_id=usuario_id,
+        estado_anterior=estado_anterior,
+        estado_nuevo=muestra.estado,
+        detalle="Anulacion Taukit confirmada, PDF generado y subido a BACON",
+        datos={
+            "fecha_confirmacion": datetime.now().isoformat(timespec="seconds"),
+            "subida_pdf": resultado_bacon,
+            "verificacion_pdf": verificacion_bacon,
+            "mail_enviado": advertencia_mail is None,
+            "mail_advertencia": advertencia_mail,
+        },
+    )
+    db.commit()
+    return muestra, advertencia_mail
+
+
+def revertir_anulacion(
+    db: Session, protocolo: str, motivo: str, usuario_id: str | None = None
+) -> Muestra:
+    raise ValueError(
+        "La reversiÃ³n directa fue reemplazada por el flujo de revisiÃ³n administrativa. "
+        "Use marcar-mal-anulado y luego revertir desde OperaciÃ³n."
+    )
+
+
+def revertir_mal_anulado_a_en_proceso(
+    db: Session, protocolo: str, usuario_id: str | None = None
+) -> Muestra:
+    muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
+    if not muestra:
+        raise ValueError("Muestra no encontrada")
+    if (
+        muestra.estado != EstadoMuestra.pendiente_anulacion
+        or muestra.bacon_pdf_enviado
+    ):
+        raise ValueError(
+            "No se puede revertir esta muestra porque la anulacion ya fue confirmada o informada a BACON."
+        )
+    marca = _ultima_marca_mal_anulado(db, protocolo)
+    if not marca:
+        raise ValueError("Solo se puede revertir una muestra marcada como mal anulada y pendiente de revisiÃ³n")
+    if muestra.tipo_estudio == TIPO_LACTOKIT:
+        raise ValueError("La reversion de anulacion aplica solo a Taukit")
+
+    datos_marca = _json_auditoria(marca.datos)
+    estado_anterior = muestra.estado
+    intentos_anteriores = muestra.intentos_fallidos
+    _limpiar_resultados_taukit(muestra)
+    muestra.estado = EstadoMuestra.en_proceso
+    muestra.tiene_error = False
+    muestra.intentos_fallidos = 1
+    registrar_auditoria(
+        db,
+        accion=ACCION_OPERACION_REVERTIR_EN_PROCESO,
+        muestra=muestra,
+        usuario_id=usuario_id,
+        estado_anterior=estado_anterior,
+        estado_nuevo=muestra.estado,
+        detalle="Anulacion Taukit pendiente revertida desde Operacion",
+        datos={
+            "motivo": datos_marca.get("motivo"),
+            "detalle": datos_marca.get("detalle"),
+            "usuario_marca": marca.usuario_id,
+            "fecha_marca": marca.fecha.isoformat(timespec="seconds") if marca.fecha else None,
+            "fecha_reversion": datetime.now().isoformat(timespec="seconds"),
+            "intentos_anteriores": intentos_anteriores,
+            "intentos_nuevos": muestra.intentos_fallidos,
+            "envio_bacon": False,
+        },
+    )
+    db.commit()
+    return muestra
 
 
 def imprimir_etiquetas(db: Session, protocolo: str, usuario_id: str | None = None) -> Muestra:
