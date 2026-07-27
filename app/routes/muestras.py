@@ -9,8 +9,10 @@ from app.schemas import (
     IngresarLoteRequest,
     IngresarLoteResponse,
     LactokitResultadosRequest,
+    MarcarMalAnuladoRequest,
     MuestraAuditoriaSchema,
     MuestraResponse,
+    RevertirAnulacionRequest,
 )
 from app.services import muestras as muestras_svc
 from app.services.carga_txt import cargar_resultados_txt
@@ -60,6 +62,15 @@ async def cargar_txt(
     return CargaTxtResponse(**resultado)
 
 
+@router.get("/pendientes-anulacion", response_model=list[MuestraResponse])
+def pendientes_anulacion(
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    filas = muestras_svc.listar_pendientes_anulacion(db)
+    return [muestra_to_response(m) for m in filas]
+
+
 @router.post("/{protocolo}/resultados-lactokit", response_model=MuestraResponse)
 def cargar_resultados_lactokit(
     protocolo: str,
@@ -76,6 +87,60 @@ def cargar_resultados_lactokit(
             body.co2,
             confirmar=body.confirmar,
             usuario_id=usuario.username,
+        )
+        return muestra_to_response(muestra)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/{protocolo}/confirmar-anulacion", response_model=MuestraResponse)
+async def confirmar_anulacion(
+    protocolo: str,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    try:
+        muestra, advertencia = await muestras_svc.confirmar_anulacion(
+            db, protocolo, usuario_id=usuario.username
+        )
+        respuesta = muestra_to_response(muestra)
+        respuesta.advertencia = advertencia
+        return respuesta
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/{protocolo}/revertir-anulacion", response_model=MuestraResponse)
+def revertir_anulacion(
+    protocolo: str,
+    body: RevertirAnulacionRequest,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    try:
+        muestra = muestras_svc.revertir_anulacion(
+            db, protocolo, body.motivo, usuario_id=usuario.username
+        )
+        return muestra_to_response(muestra)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/{protocolo}/marcar-mal-anulado", response_model=MuestraResponse)
+def marcar_mal_anulado(
+    protocolo: str,
+    body: MarcarMalAnuladoRequest,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    try:
+        muestra = muestras_svc.marcar_mal_anulado(
+            db,
+            protocolo,
+            motivo=body.motivo,
+            detalle=body.detalle,
+            usuario_id=usuario.username,
+            usuario_id_body=body.usuarioId,
         )
         return muestra_to_response(muestra)
     except ValueError as e:

@@ -135,6 +135,60 @@ async def subir_pdf_a_bacon(numero_serie: str, pdf_bytes: bytes) -> dict | None:
         return {"success": False, "error": str(exc)}
 
 
+async def subir_pdf_sin_restriccion_a_bacon(numero_serie: str, pdf_bytes: bytes) -> dict | None:
+    pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
+    print(f"[BACON] PDF sin restriccion generado para TauKit {numero_serie}: {pdf_size_mb:.2f}MB")
+
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        print(f"[BACON] PDF de {numero_serie} supera el limite de 10MB")
+        return None
+
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.bacon_api_url}/subirPDFSinRestriccion",
+                data={
+                    "token": settings.bacon_token,
+                    "numero_serie": numero_serie,
+                },
+                files={
+                    "archivo_pdf": (f"{numero_serie}.pdf", pdf_bytes, "application/pdf"),
+                },
+                headers={
+                    "User-Agent": BACON_HEADERS["User-Agent"],
+                    "Accept": BACON_HEADERS["Accept"],
+                    "Accept-Language": BACON_HEADERS["Accept-Language"],
+                },
+            )
+            if response.status_code >= 400:
+                cuerpo = response.text[:500]
+                print(
+                    f"[BACON] subirPDFSinRestriccion {numero_serie} -> HTTP "
+                    f"{response.status_code}. Respuesta BACON: {cuerpo!r}"
+                )
+                return {
+                    "success": False,
+                    "error": f"BACON respondio HTTP {response.status_code}: {cuerpo}",
+                    "raw": cuerpo,
+                }
+            data = response.json()
+            if isinstance(data, dict) and (
+                data.get("success") is False or data.get("type") == "danger"
+            ):
+                print(f"[BACON] Error al subir PDF sin restriccion de {numero_serie}: {data}")
+                return {
+                    "success": False,
+                    "error": data.get("message") or data.get("error") or "BACON rechazo el PDF",
+                    "raw": data,
+                }
+            print(f"[BACON] PDF sin restriccion subido para TauKit {numero_serie}: {data}")
+            return data
+    except Exception as exc:
+        print(f"[BACON] Error al subir PDF sin restriccion de {numero_serie}: {exc}")
+        return {"success": False, "error": str(exc)}
+
+
 def _extraer_archivos_pdf_verificacion(data) -> list[dict]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
