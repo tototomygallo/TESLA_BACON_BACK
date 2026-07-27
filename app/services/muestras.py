@@ -133,7 +133,6 @@ async def ingresar_lote(db: Session, codigos: list[str], usuario_id: str | None 
                 continue
             estado_anterior = muestra_existente.estado
             muestra_existente.estado = "recibido"
-            muestra_existente.fecha_ingreso = ahora
             if not muestra_existente.tipo_estudio:
                 muestra_existente.tipo_estudio = tipo_estudio
             registrar_auditoria(

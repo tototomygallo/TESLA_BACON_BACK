@@ -36,9 +36,9 @@ def _fmt_fecha_informe(fecha_str: str) -> str:
 
 def _fmt_fecha_corta(fecha_str: str) -> str:
     """'YYYY-MM-DD' → 'DD-MM-YYYY'"""
-    if not fecha_str or "-" not in fecha_str:
+    if not fecha_str or "/" in fecha_str or "-" not in fecha_str:
         return fecha_str or ""
-    y, m, d = fecha_str.split("-")
+    y, m, d = fecha_str.split(" ")[0].split("-")
     return f"{d}-{m}-{y}"
 
 
