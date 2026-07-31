@@ -397,9 +397,16 @@ async def reiniciar_muestra(
 
     estado_anterior = muestra.estado
     intentos_anteriores = muestra.intentos_fallidos
+    reinicio_sobre_error_equipo = (
+        muestra.estado == EstadoMuestra.en_proceso
+        and muestra.tiene_error
+        and muestra.resultado_cargado_en is not None
+        and 0 < muestra.intentos_fallidos < 2
+    )
 
     # Cada reinicio consume una medición del TauKit (igual que un error de equipo).
-    muestra.intentos_fallidos += 1
+    if not reinicio_sobre_error_equipo:
+        muestra.intentos_fallidos += 1
 
     if muestra.intentos_fallidos >= 2:
         # Se agotaron las 2 mediciones del TauKit. No se informa a BACON hasta que
@@ -417,7 +424,8 @@ async def reiniciar_muestra(
             datos={
                 "intentos_anteriores": intentos_anteriores,
                 "intentos_nuevos": muestra.intentos_fallidos,
-                "consume_intento": True,
+                "consume_intento": not reinicio_sobre_error_equipo,
+                "reinicio_sobre_error_equipo": reinicio_sobre_error_equipo,
                 "envio_bacon": False,
             },
         )
@@ -442,7 +450,8 @@ async def reiniciar_muestra(
         datos={
             "intentos_anteriores": intentos_anteriores,
             "intentos_nuevos": muestra.intentos_fallidos,
-            "consume_intento": True,
+            "consume_intento": not reinicio_sobre_error_equipo,
+            "reinicio_sobre_error_equipo": reinicio_sobre_error_equipo,
         },
     )
     db.commit()
@@ -625,7 +634,7 @@ def _tiene_correccion_pendiente_informe(db: Session, protocolo: str) -> bool:
 
 def listar_completados_para_correccion(db: Session, q: str | None = None) -> list[dict]:
     query = db.query(Muestra).filter(
-        Muestra.estado == EstadoMuestra.completado,
+        Muestra.estado.in_([EstadoMuestra.completado, EstadoMuestra.anulado]),
         Muestra.tipo_estudio != TIPO_LACTOKIT,
     )
 
@@ -687,9 +696,9 @@ def cargar_valores_correccion_completado(
     if not muestra:
         raise ValueError("Muestra no encontrada")
     if muestra.tipo_estudio == TIPO_LACTOKIT:
-        raise ValueError("La correccion de completados aplica solo a Taukit")
-    if muestra.estado != EstadoMuestra.completado:
-        raise ValueError("Solo se pueden corregir muestras Taukit completadas")
+        raise ValueError("La correccion de completados/anulados aplica solo a Taukit")
+    if muestra.estado not in (EstadoMuestra.completado, EstadoMuestra.anulado):
+        raise ValueError("Solo se pueden corregir muestras Taukit completadas o anuladas")
 
     valores_anteriores = _resultado_taukit_dict(muestra)
     valores_nuevos = {
@@ -718,7 +727,7 @@ def cargar_valores_correccion_completado(
         usuario_id=usuario_id,
         estado_anterior=muestra.estado,
         estado_nuevo=muestra.estado,
-        detalle="Valores de muestra completada corregidos desde Operacion",
+        detalle="Valores de muestra completada/anulada corregidos desde Operacion",
         datos={
             "fecha_correccion": ahora.isoformat(timespec="seconds"),
             "usuario_id_body": usuario_id_body,
@@ -742,9 +751,9 @@ async def generar_informe_correccion_completado(
     if not muestra:
         raise ValueError("Muestra no encontrada")
     if muestra.tipo_estudio == TIPO_LACTOKIT:
-        raise ValueError("La correccion de completados aplica solo a Taukit")
-    if muestra.estado != EstadoMuestra.completado:
-        raise ValueError("Solo se puede regenerar informe de muestras Taukit completadas")
+        raise ValueError("La correccion de completados/anulados aplica solo a Taukit")
+    if muestra.estado not in (EstadoMuestra.completado, EstadoMuestra.anulado):
+        raise ValueError("Solo se puede regenerar informe de muestras Taukit completadas o anuladas")
     if not _tiene_correccion_pendiente_informe(db, protocolo):
         raise ValueError("Primero deben cargarse valores corregidos")
     if muestra.resultado_test_value is None:

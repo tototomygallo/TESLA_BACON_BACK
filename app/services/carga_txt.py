@@ -54,6 +54,15 @@ def _respuesta_vacia(txt_duplicado: bool = False) -> dict:
     }
 
 
+def _puede_reemplazar_error_equipo(muestra: Muestra) -> bool:
+    return (
+        muestra.estado == EstadoMuestra.en_proceso
+        and muestra.tiene_error
+        and muestra.resultado_cargado_en is not None
+        and 0 < muestra.intentos_fallidos < 2
+    )
+
+
 async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | None = None) -> dict:
     """
     Parsea el TXT del HeliFan y carga resultados en las muestras correspondientes.
@@ -105,11 +114,10 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
             no_encontrados.append(r.test_id)
             continue
 
-        # Si la muestra ya tiene resultados cargados (en_validacion o en error), no se
-        # pisa: se saltea sin tocar resultados ni intentos. La única vía para recargar
-        # es "Reiniciar muestra", que borra los resultados. Así hay una sola carga por
-        # reinicio.
-        if muestra.resultado_cargado_en is not None:
+        # Si ya tiene resultados cargados, no se pisa. Excepcion: un error de equipo
+        # previo ya consumio el intento y la siguiente lectura puede reemplazarlo.
+        reprocesa_error_equipo = _puede_reemplazar_error_equipo(muestra)
+        if muestra.resultado_cargado_en is not None and not reprocesa_error_equipo:
             requieren_reinicio.append(muestra.protocolo)
             continue
 
@@ -117,6 +125,16 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
         es_reintento = muestra.intentos_fallidos > 0
         estado_anterior = muestra.estado
         intentos_anteriores = muestra.intentos_fallidos
+        valores_anteriores = None
+        if reprocesa_error_equipo:
+            valores_anteriores = {
+                "basal_co2": muestra.resultado_basal_co2,
+                "post_co2": muestra.resultado_post_co2,
+                "basal_delta": muestra.resultado_basal_delta,
+                "post_delta": muestra.resultado_post_delta,
+                "test_value": muestra.resultado_test_value,
+                "cargado_en": muestra.resultado_cargado_en,
+            }
 
         # Cargar los valores del resultado
         muestra.resultado_basal_co2 = r.basal_co2
@@ -165,6 +183,8 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
                 "intentos_anteriores": intentos_anteriores,
                 "intentos_nuevos": muestra.intentos_fallidos,
                 "envio_bacon": envio_bacon,
+                "reprocesa_error_equipo_previo": reprocesa_error_equipo,
+                "valores_anteriores": valores_anteriores,
             },
         )
 
