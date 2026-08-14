@@ -10,12 +10,13 @@ from fpdf.fonts import FontFace, TextStyle
 from sqlalchemy.orm import object_session
 
 from app.models import Muestra
-from app.services.estudios import TIPO_LACTOKIT
+from app.services.estudios import TIPO_LACTOKIT, TIPO_SIBOKIT
 from app.services.lactokit import (
     LACTOKIT_DESCRIPCIONES,
     leer_valores_lactokit,
     obtener_resultado_lactokit,
 )
+from app.services.sibokit import leer_valores_sibokit, obtener_resultado_sibokit
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 HEADER_IMG = os.path.join(ASSETS_DIR, "header-tesla.png")
@@ -49,6 +50,8 @@ def generar_informe_pdf(muestra: Muestra, validacion_clinica: bool = True) -> by
     """
     if muestra.tipo_estudio == TIPO_LACTOKIT:
         return _generar_informe_lactokit_pdf(muestra, validacion_clinica)
+    if muestra.tipo_estudio == TIPO_SIBOKIT:
+        return _generar_informe_sibokit_pdf(muestra, validacion_clinica)
 
     if muestra.resultado_test_value is None:
         raise ValueError("La muestra no tiene resultados cargados")
@@ -355,7 +358,7 @@ def _dibujar_grafico_lactokit(
     h2: list,
     ch4: list,
 ) -> float:
-    tiempos = [0, 25, 50, 75, 100, 125, 150, 175]
+    tiempos = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165] if len(h2) == 12 else [0, 25, 50, 75, 100, 125, 150, 175]
     valores_num = [
         v
         for v in [_valor_grafico(v) for v in h2 + ch4]
@@ -377,8 +380,8 @@ def _dibujar_grafico_lactokit(
 
     pdf.set_draw_color(225, 225, 225)
     pdf.set_line_width(0.1)
-    for i in range(9):
-        gx = left + (chart_w / 8) * i
+    for i in range(len(tiempos)):
+        gx = left + (chart_w / (len(tiempos) - 1)) * i
         pdf.line(gx, top, gx, bottom)
     for valor in range(0, max_val + 1, 20):
         gy = bottom - (valor / max_val) * chart_h
@@ -393,7 +396,7 @@ def _dibujar_grafico_lactokit(
     pdf.line(left, bottom, left + chart_w, bottom)
 
     def punto(idx: int, valor: float) -> tuple[float, float]:
-        px = left + (tiempos[idx] / 175) * chart_w
+        px = left + (tiempos[idx] / tiempos[-1]) * chart_w
         py = bottom - (valor / max_val) * chart_h
         return px, py
 
@@ -418,7 +421,7 @@ def _dibujar_grafico_lactokit(
     pdf.set_font("Helvetica", "", 5.8)
     pdf.set_text_color(0, 0, 0)
     for idx, tiempo in enumerate(tiempos):
-        px = left + (tiempo / 175) * chart_w
+        px = left + (tiempo / tiempos[-1]) * chart_w
         pdf.set_xy(px - 4, bottom + 1.5)
         pdf.cell(8, 3, str(tiempo), align="C")
 
@@ -795,4 +798,99 @@ def _generar_informe_lactokit_pdf(muestra: Muestra, validacion_clinica: bool = T
         return bytes(pdf.output())
 
     _dibujar_footer_lactokit(pdf, page_w, margin_l, margin_r)
+    return bytes(pdf.output())
+
+
+def _valores_corregidos_sibokit(valores: dict[str, list]) -> tuple[list, list]:
+    """Corrige H2/CH4 a 5,5 % de CO2; una muestra insuficiente se informa en cero."""
+    corregidos = ([], [])
+    for gas, destino in zip((valores["h2"], valores["ch4"]), corregidos):
+        for valor, co2, factor in zip(gas, valores["co2"], valores["factor_correccion"]):
+            if co2 is None or float(co2) <= 1.4 or factor is None:
+                destino.append(0)
+            else:
+                destino.append(round(float(valor) * float(factor), 1))
+    return corregidos
+
+
+def _dibujar_tabla_sibokit(pdf: FPDF, x: float, y: float, valores: dict[str, list]) -> float:
+    tiempos = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165]
+    headers = ["TIEMPO (min)", "H2 (ppm) CORREGIDO", "CH4 (ppm) CORREGIDO", "CO2 (%) MUESTRA", "FACTOR CORRECCIÓN"]
+    widths = [25, 43, 43, 32, 27]
+    row_h = 4.5
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.15)
+    pdf.set_font("Helvetica", "B", 5.2)
+    for col, (header, width) in enumerate(zip(headers, widths)):
+        cx = x + sum(widths[:col])
+        pdf.rect(cx, y, width, row_h)
+        pdf.set_text_color(255, 35, 35) if col == 2 else pdf.set_text_color(0, 70, 140)
+        pdf.set_xy(cx, y + .7)
+        pdf.cell(width, 3, header, align="C")
+    y += row_h
+    h2_corregido, ch4_corregido = _valores_corregidos_sibokit(valores)
+    for idx, tiempo in enumerate(tiempos):
+        fila = [tiempo, h2_corregido[idx], ch4_corregido[idx], valores["co2"][idx], valores["factor_correccion"][idx]]
+        for col, (valor, width) in enumerate(zip(fila, widths)):
+            cx = x + sum(widths[:col])
+            pdf.rect(cx, y, width, row_h)
+            pdf.set_font("Helvetica", "B" if col in (1, 2) else "", 7)
+            pdf.set_text_color(255, 35, 35) if col == 2 else pdf.set_text_color(0, 70, 140)
+            pdf.set_xy(cx, y + .7)
+            pdf.cell(width, 3, _fmt_lactokit_valor(valor), align="C")
+        y += row_h
+    pdf.set_text_color(0, 0, 0)
+    return y + 4
+
+
+def _referencias_sibokit_html() -> str:
+    return "".join([
+        _html_p_rich([("VALORES DE REFERENCIA - SIBO (Sobrecrecimiento de bacterias productoras de H2 en el intestino delgado)", True)], align="L"),
+        _html_p_rich([("· NEGATIVO: ", True), ("Se considera el test negativo cuando las concentraciones de hidrógeno - H2 no varían y/o hay menos de 20 ppm con respecto al valor basal antes del minuto 90.", False)], align="L"),
+        _html_p_rich([("· POSITIVO: ", True), ("Cualquier incremento de hidrógeno - H2 mayor o igual a 20 ppm con respecto al valor basal antes o en el minuto 90.", False)], align="L"),
+        _html_p_rich([("VALORES DE REFERENCIA - IMO (Sobrecrecimiento metanogénico - CH4 en el intestino) - ARQUEAS", True)], align="L"),
+        _html_p_rich([("· NEGATIVO: ", True), ("Se considera el test negativo cuando las concentraciones de metano - CH4 son menores a 10 ppm en todos los puntos de la gráfica.", False)], align="L"),
+        _html_p_rich([("· POSITIVO: ", True), ("Cualquier incremento de metano - CH4 mayor o igual a 10 ppm en cualquier punto de la gráfica.", False)], align="L"),
+    ])
+
+
+def _notas_sibokit_html() -> str:
+    return "".join([
+        _html_p("Valores de referencia obtenidos de: Rezaie A et al. Hydrogen and Methane-Based Breath Testing in Gastrointestinal Disorders: The North American Consensus. Am J Gastroenterology 2017 May;112(5):775-784."),
+        _html_p("Los valores de H2 y CH4 son corregidos proporcionalmentea un valor de 5,5% de CO2 según las especificaciones del analizador. El factor de corrección es el número por el que se multiplican los valores obtenidos de H2 y CH4 para realizar dicha corrección."),
+        _html_p_rich([("Toda muestra con un valor igual o inferior a 1,4% de CO2 será \"", False), ("Muestra Insuficiente", True), ("\", ya que se considera que la muestra está contaminada o diluida. En este caso los valores de H2 y CH4 no pueden ser informados y su resultado será cero.", False)]),
+    ])
+
+
+def _generar_informe_sibokit_pdf(muestra: Muestra, validacion_clinica: bool = True) -> bytes:
+    db = object_session(muestra)
+    resultado = obtener_resultado_sibokit(db, muestra.protocolo) if db else None
+    valores = leer_valores_sibokit(resultado)
+    if not valores or not resultado or not resultado.valoracion:
+        raise ValueError("La muestra Sibokit no tiene resultados confirmados")
+    pdf = FPDF(orientation="P", unit="mm", format="A4"); pdf.set_auto_page_break(auto=False); pdf.add_page()
+    y = _dibujar_cabecera_lactokit(pdf, muestra, 210, 20, 20, 12)
+    pdf.set_font("Helvetica", "B", 9); pdf.set_xy(20, y)
+    pdf.multi_cell(170, 4.5, "ANÁLISIS DE LA PRUEBA DE ALIENTO DE HIDRÓGENO (H2) Y METANO (CH4) PARA EL ESTUDIO DEL SOBRECRECIMIENTO BACTERIANO Y METANOGÉNICO (ARQUEAS) SIBOKIT", align="C")
+    y = pdf.get_y() + 3; pdf.line(20, y, 190, y); y += 3
+    h2_corregido, ch4_corregido = _valores_corregidos_sibokit(valores)
+    y = _dibujar_grafico_lactokit(pdf, 38, y, 134, 60, h2_corregido, ch4_corregido) + 1
+    y = _dibujar_tabla_sibokit(pdf, 20, y, valores)
+    pdf.set_font("Helvetica", "BU", 8); pdf.set_xy(20, y); pdf.cell(170, 4, "VALORACIÓN DE LA PRUEBA"); y += 5
+    pdf.set_font("Helvetica", "", 7); pdf.set_xy(20, y); pdf.multi_cell(170, 3.4, resultado.descripcion.upper()); y = pdf.get_y() + 2
+    if resultado.nota_adicional:
+        pdf.set_font("Helvetica", "B", 6.5); pdf.set_xy(20, y); pdf.multi_cell(170, 3.2, resultado.nota_adicional); y = pdf.get_y() + 2
+    pdf.add_page()
+    y = 24
+    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 70, 140); pdf.set_xy(16, y)
+    pdf.cell(178, 4, "INTERPRETACIÓN DE LA PRUEBA"); y += 7
+    y = _write_html_lactokit(pdf, 16, y, _referencias_sibokit_html(), font_size=8.5, paragraph_gap=1.6)
+    y += 8
+    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 70, 140); pdf.set_xy(16, y)
+    pdf.cell(178, 4, "NOTA:"); y += 7
+    _write_html_lactokit(pdf, 16, y, _notas_sibokit_html(), font_size=8.5, paragraph_gap=2)
+    if not validacion_clinica:
+        pdf.set_text_color(170, 170, 170); pdf.set_font("Helvetica", "", 20); pdf.set_xy(35, 255); pdf.cell(140, 8, "INFORME SIN VALIDACIÓN CLÍNICA", align="C")
+    else:
+        _dibujar_footer_lactokit(pdf, 210, 20, 20)
     return bytes(pdf.output())

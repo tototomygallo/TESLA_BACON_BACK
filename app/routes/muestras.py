@@ -9,6 +9,7 @@ from app.schemas import (
     IngresarLoteRequest,
     IngresarLoteResponse,
     LactokitResultadosRequest,
+    SibokitResultadosRequest,
     MarcarMalAnuladoRequest,
     MuestraAuditoriaSchema,
     MuestraResponse,
@@ -17,8 +18,9 @@ from app.schemas import (
 from app.services import muestras as muestras_svc
 from app.services.carga_txt import cargar_resultados_txt
 from app.services.converters import muestra_to_response
-from app.services.estudios import TIPO_LACTOKIT
+from app.services.estudios import TIPO_LACTOKIT, TIPO_SIBOKIT
 from app.services.lactokit import guardar_resultados_lactokit, obtener_resultado_lactokit
+from app.services.sibokit import guardar_resultados_sibokit, obtener_resultado_sibokit
 from app.services.pdf_generator import generar_informe_pdf
 from app.models import Muestra, MuestraAuditoria, Usuario
 
@@ -88,6 +90,15 @@ def cargar_resultados_lactokit(
             confirmar=body.confirmar,
             usuario_id=usuario.username,
         )
+        return muestra_to_response(muestra)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/{protocolo}/resultados-sibokit", response_model=MuestraResponse)
+def cargar_resultados_sibokit(protocolo: str, body: SibokitResultadosRequest, db: Session = Depends(get_db), usuario: Usuario = Depends(get_current_user)):
+    try:
+        muestra = guardar_resultados_sibokit(db, protocolo, body.h2, body.ch4, body.co2, confirmar=body.confirmar, usuario_id=usuario.username)
         return muestra_to_response(muestra)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -237,6 +248,9 @@ def descargar_pdf(
     if muestra.tipo_estudio == TIPO_LACTOKIT:
         resultado_lactokit = obtener_resultado_lactokit(db, muestra.protocolo)
         sin_resultados = resultado_lactokit is None or not resultado_lactokit.valoracion
+    elif muestra.tipo_estudio == TIPO_SIBOKIT:
+        resultado_sibokit = obtener_resultado_sibokit(db, muestra.protocolo)
+        sin_resultados = resultado_sibokit is None or not resultado_sibokit.valoracion
     else:
         sin_resultados = muestra.resultado_test_value is None
     if sin_resultados:

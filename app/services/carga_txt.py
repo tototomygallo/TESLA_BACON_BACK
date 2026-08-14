@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models import EstadoMuestra, Muestra
 from app.services.auditoria import registrar_auditoria
-from app.services.estudios import TIPO_LACTOKIT
+from app.services.estudios import TIPO_LACTOKIT, TIPO_SIBOKIT
 from app.services.txt_parser import parsear_txt
 
 # Firma del último TXT cargado, para detectar re-subidas del mismo archivo.
@@ -110,7 +110,7 @@ async def cargar_resultados_txt(db: Session, contenido: str, usuario_id: str | N
             ya_anuladas.append(muestra.protocolo)
             continue
 
-        if muestra.tipo_estudio == TIPO_LACTOKIT:
+        if muestra.tipo_estudio in (TIPO_LACTOKIT, TIPO_SIBOKIT):
             no_encontrados.append(r.test_id)
             continue
 

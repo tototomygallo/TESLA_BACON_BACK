@@ -8,6 +8,7 @@ from app.services import bacon
 from app.services.auditoria import registrar_auditoria
 from app.services.estudios import (
     TIPO_LACTOKIT,
+    TIPO_SIBOKIT,
     codigo_estudio_para_tipo,
     nombre_estudio_para_tipo,
     tipo_estudio_desde_codigo,
@@ -439,6 +440,9 @@ async def reiniciar_muestra(
     if muestra.tipo_estudio == TIPO_LACTOKIT:
         from app.models import LactokitResultado
         db.query(LactokitResultado).filter_by(protocolo=protocolo).delete()
+    elif muestra.tipo_estudio == TIPO_SIBOKIT:
+        from app.models import SibokitResultado
+        db.query(SibokitResultado).filter_by(protocolo=protocolo).delete()
     registrar_auditoria(
         db,
         accion="reinicio_muestra",
@@ -472,7 +476,7 @@ def listar_pendientes_anulacion(db: Session) -> list[Muestra]:
         .filter(
             Muestra.estado == EstadoMuestra.pendiente_anulacion,
             Muestra.bacon_pdf_enviado == False,  # noqa: E712
-            Muestra.tipo_estudio != TIPO_LACTOKIT,
+            ~Muestra.tipo_estudio.in_([TIPO_LACTOKIT, TIPO_SIBOKIT]),
             ~derivada_a_revision,
         )
         .order_by(Muestra.updated_at.desc(), Muestra.fecha_ingreso.desc())
@@ -523,7 +527,7 @@ def marcar_mal_anulado(
         raise ValueError("Muestra no encontrada")
     if muestra.estado != EstadoMuestra.pendiente_anulacion or muestra.bacon_pdf_enviado:
         raise ValueError("Solo se pueden marcar como mal anuladas muestras pendientes no informadas a BACON")
-    if muestra.tipo_estudio == TIPO_LACTOKIT:
+    if muestra.tipo_estudio in (TIPO_LACTOKIT, TIPO_SIBOKIT):
         raise ValueError("La marca de mal anulado aplica solo a Taukit")
 
     registrar_auditoria(
@@ -635,7 +639,7 @@ def _tiene_correccion_pendiente_informe(db: Session, protocolo: str) -> bool:
 def listar_completados_para_correccion(db: Session, q: str | None = None) -> list[dict]:
     query = db.query(Muestra).filter(
         Muestra.estado.in_([EstadoMuestra.completado, EstadoMuestra.anulado]),
-        Muestra.tipo_estudio != TIPO_LACTOKIT,
+        ~Muestra.tipo_estudio.in_([TIPO_LACTOKIT, TIPO_SIBOKIT]),
     )
 
     termino = (q or "").strip()
@@ -695,7 +699,7 @@ def cargar_valores_correccion_completado(
     muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
     if not muestra:
         raise ValueError("Muestra no encontrada")
-    if muestra.tipo_estudio == TIPO_LACTOKIT:
+    if muestra.tipo_estudio in (TIPO_LACTOKIT, TIPO_SIBOKIT):
         raise ValueError("La correccion de completados/anulados aplica solo a Taukit")
     if muestra.estado not in (EstadoMuestra.completado, EstadoMuestra.anulado):
         raise ValueError("Solo se pueden corregir muestras Taukit completadas o anuladas")
@@ -750,7 +754,7 @@ async def generar_informe_correccion_completado(
     muestra = db.query(Muestra).filter_by(protocolo=protocolo).first()
     if not muestra:
         raise ValueError("Muestra no encontrada")
-    if muestra.tipo_estudio == TIPO_LACTOKIT:
+    if muestra.tipo_estudio in (TIPO_LACTOKIT, TIPO_SIBOKIT):
         raise ValueError("La correccion de completados/anulados aplica solo a Taukit")
     if muestra.estado not in (EstadoMuestra.completado, EstadoMuestra.anulado):
         raise ValueError("Solo se puede regenerar informe de muestras Taukit completadas o anuladas")
@@ -802,7 +806,7 @@ async def confirmar_anulacion(
         raise ValueError("Muestra no encontrada")
     if muestra.estado != EstadoMuestra.pendiente_anulacion:
         raise ValueError("Solo se pueden confirmar muestras pendientes de anulacion")
-    if muestra.tipo_estudio == TIPO_LACTOKIT:
+    if muestra.tipo_estudio in (TIPO_LACTOKIT, TIPO_SIBOKIT):
         raise ValueError("La confirmacion de anulacion aplica solo a Taukit")
     if muestra.bacon_pdf_enviado:
         raise ValueError("La anulacion ya fue informada a BACON")
@@ -866,7 +870,7 @@ def revertir_mal_anulado_a_en_proceso(
     marca = _ultima_marca_mal_anulado(db, protocolo)
     if not marca:
         raise ValueError("Solo se puede revertir una muestra marcada como mal anulada y pendiente de revisiÃ³n")
-    if muestra.tipo_estudio == TIPO_LACTOKIT:
+    if muestra.tipo_estudio in (TIPO_LACTOKIT, TIPO_SIBOKIT):
         raise ValueError("La reversion de anulacion aplica solo a Taukit")
 
     datos_marca = _json_auditoria(marca.datos)

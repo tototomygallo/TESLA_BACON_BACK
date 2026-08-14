@@ -38,10 +38,22 @@ class ResultadoLactokitSchema(BaseModel):
     cargadoEn: str
 
 
+class ResultadoSibokitSchema(BaseModel):
+    h2: list[Any]
+    ch4: list[Any]
+    co2: list[Any]
+    factorCorreccion: list[Any]
+    valoracion: str
+    descripcion: str
+    notaAdicional: Optional[str] = None
+    cargadoEn: str
+
+
 class MuestraResponse(BaseModel):
     protocolo: str
     codigoTauKit: str
     codigoLactokit: Optional[str] = None
+    codigoSibokit: Optional[str] = None
     tipoEstudio: str = "taukit"
     paciente: PacienteSchema
     estudio: EstudioSchema
@@ -52,6 +64,7 @@ class MuestraResponse(BaseModel):
     intentosFallidos: int
     resultados: Optional[ResultadoMuestraSchema] = None
     resultadosLactokit: Optional[ResultadoLactokitSchema] = None
+    resultadosSibokit: Optional[ResultadoSibokitSchema] = None
     pdfGenerado: bool = False
     pdfVerificado: bool = False
     pdfVerificacion: Optional[Any] = None
@@ -84,6 +97,13 @@ class CargaTxtResponse(BaseModel):
 
 
 class LactokitResultadosRequest(BaseModel):
+    h2: list[Any]
+    ch4: list[Any]
+    co2: list[Any]
+    confirmar: bool = True
+
+
+class SibokitResultadosRequest(BaseModel):
     h2: list[Any]
     ch4: list[Any]
     co2: list[Any]

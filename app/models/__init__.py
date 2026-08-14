@@ -110,6 +110,26 @@ class LactokitResultado(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class SibokitResultado(Base):
+    __tablename__ = "sibokits_resultados"
+    __table_args__ = {"schema": settings.db_schema}
+
+    protocolo = Column(String, ForeignKey(f"{settings.db_schema}.muestras.protocolo"), primary_key=True)
+    codigo_sibokit = Column(String, nullable=False, unique=True, index=True)
+    h2 = Column(Text, nullable=False)
+    ch4 = Column(Text, nullable=False)
+    co2 = Column(Text, nullable=False)
+    factor_correccion = Column(Text, nullable=False)
+    valores_descartados = Column(Text, nullable=False, default="[]")
+    valoracion = Column(String, nullable=False)
+    descripcion = Column(String, nullable=False)
+    nota_adicional = Column(Text, nullable=True)
+    cargado_en = Column(String, nullable=False)
+    usuario_id = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class MuestraAuditoria(Base):
     __tablename__ = "muestras_auditoria"
     __table_args__ = {"schema": settings.db_schema}

@@ -3,10 +3,11 @@ from sqlalchemy.orm import object_session
 from app.models import Muestra
 from app.schemas import (
     EstudioSchema, MuestraResponse, PacienteSchema,
-    ResultadoLactokitSchema, ResultadoMuestraSchema, SucursalSchema,
+    ResultadoLactokitSchema, ResultadoSibokitSchema, ResultadoMuestraSchema, SucursalSchema,
 )
-from app.services.estudios import TIPO_LACTOKIT
+from app.services.estudios import TIPO_LACTOKIT, TIPO_SIBOKIT
 from app.services.lactokit import leer_valores_lactokit, obtener_resultado_lactokit
+from app.services.sibokit import leer_valores_sibokit, obtener_resultado_sibokit
 
 
 def muestra_to_response(m: Muestra) -> MuestraResponse:
@@ -49,6 +50,21 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
             cargadoEn=resultado_lactokit.cargado_en or "",
         )
 
+    resultados_sibokit = None
+    resultado_sibokit = None
+    if m.tipo_estudio == TIPO_SIBOKIT:
+        db = object_session(m)
+        if db:
+            resultado_sibokit = obtener_resultado_sibokit(db, m.protocolo)
+    valores_sibokit = leer_valores_sibokit(resultado_sibokit)
+    if valores_sibokit and resultado_sibokit:
+        resultados_sibokit = ResultadoSibokitSchema(
+            h2=valores_sibokit["h2"], ch4=valores_sibokit["ch4"], co2=valores_sibokit["co2"],
+            factorCorreccion=valores_sibokit["factor_correccion"],
+            valoracion=resultado_sibokit.valoracion, descripcion=resultado_sibokit.descripcion,
+            notaAdicional=resultado_sibokit.nota_adicional, cargadoEn=resultado_sibokit.cargado_en or "",
+        )
+
     return MuestraResponse(
         protocolo=m.protocolo,
         codigoTauKit=m.codigo_taukit,
@@ -57,6 +73,7 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
             if resultado_lactokit
             else m.codigo_taukit if m.tipo_estudio == TIPO_LACTOKIT else None
         ),
+        codigoSibokit=(resultado_sibokit.codigo_sibokit if resultado_sibokit else m.codigo_taukit if m.tipo_estudio == TIPO_SIBOKIT else None),
         tipoEstudio=m.tipo_estudio or "taukit",
         paciente=PacienteSchema(
             nombre=m.paciente_nombre, apellido=m.paciente_apellido,
@@ -70,6 +87,7 @@ def muestra_to_response(m: Muestra) -> MuestraResponse:
         intentosFallidos=m.intentos_fallidos,
         resultados=resultados,
         resultadosLactokit=resultados_lactokit,
+        resultadosSibokit=resultados_sibokit,
         pdfGenerado=m.pdf_generado,
         pdfVerificado=bool(m.bacon_pdf_enviado),
         pdfVerificacion=None,
