@@ -815,8 +815,8 @@ def _valores_corregidos_sibokit(valores: dict[str, list]) -> tuple[list, list]:
 
 def _dibujar_tabla_sibokit(pdf: FPDF, x: float, y: float, valores: dict[str, list]) -> float:
     tiempos = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165]
-    headers = ["TIEMPO (min)", "H2 (ppm) CORREGIDO", "CH4 (ppm) CORREGIDO", "CO2 (%) MUESTRA", "FACTOR CORRECCIÓN"]
-    widths = [25, 43, 43, 32, 27]
+    headers = ["TIEMPO (min)", "H2 (ppm) CORREGIDO", "CH4 (ppm) CORREGIDO", "CO2 (%) MUESTRA"]
+    widths = [30, 48, 48, 44]
     row_h = 4.5
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.15)
@@ -830,7 +830,7 @@ def _dibujar_tabla_sibokit(pdf: FPDF, x: float, y: float, valores: dict[str, lis
     y += row_h
     h2_corregido, ch4_corregido = _valores_corregidos_sibokit(valores)
     for idx, tiempo in enumerate(tiempos):
-        fila = [tiempo, h2_corregido[idx], ch4_corregido[idx], valores["co2"][idx], valores["factor_correccion"][idx]]
+        fila = [tiempo, h2_corregido[idx], ch4_corregido[idx], valores["co2"][idx]]
         for col, (valor, width) in enumerate(zip(fila, widths)):
             cx = x + sum(widths[:col])
             pdf.rect(cx, y, width, row_h)
@@ -845,12 +845,12 @@ def _dibujar_tabla_sibokit(pdf: FPDF, x: float, y: float, valores: dict[str, lis
 
 def _referencias_sibokit_html() -> str:
     return "".join([
-        _html_p_rich([("VALORES DE REFERENCIA - SIBO (Sobrecrecimiento de bacterias productoras de H2 en el intestino delgado)", True)], align="L"),
-        _html_p_rich([("· NEGATIVO: ", True), ("Se considera el test negativo cuando las concentraciones de hidrógeno - H2 no varían y/o hay menos de 20 ppm con respecto al valor basal antes del minuto 90.", False)], align="L"),
-        _html_p_rich([("· POSITIVO: ", True), ("Cualquier incremento de hidrógeno - H2 mayor o igual a 20 ppm con respecto al valor basal antes o en el minuto 90.", False)], align="L"),
-        _html_p_rich([("VALORES DE REFERENCIA - IMO (Sobrecrecimiento metanogénico - CH4 en el intestino) - ARQUEAS", True)], align="L"),
-        _html_p_rich([("· NEGATIVO: ", True), ("Se considera el test negativo cuando las concentraciones de metano - CH4 son menores a 10 ppm en todos los puntos de la gráfica.", False)], align="L"),
-        _html_p_rich([("· POSITIVO: ", True), ("Cualquier incremento de metano - CH4 mayor o igual a 10 ppm en cualquier punto de la gráfica.", False)], align="L"),
+        _html_p_rich([("VALORES DE REFERENCIA - SIBO (Sobrecrecimiento de bacterias productoras de H2 en el intestino delgado)", True)]),
+        _html_p_rich([("· NEGATIVO: ", True), ("Se considera el test negativo cuando las concentraciones de hidrógeno - H2 no varían y/o hay menos de 20 ppm con respecto al valor basal antes del minuto 90.", False)]),
+        _html_p_rich([("· POSITIVO: ", True), ("Cualquier incremento de hidrógeno - H2 mayor o igual a 20 ppm con respecto al valor basal antes o en el minuto 90.", False)]),
+        _html_p_rich([("VALORES DE REFERENCIA - IMO (Sobrecrecimiento metanogénico - CH4 en el intestino) - ARQUEAS", True)]),
+        _html_p_rich([("· NEGATIVO: ", True), ("Se considera el test negativo cuando las concentraciones de metano - CH4 son menores a 10 ppm en todos los puntos de la gráfica.", False)]),
+        _html_p_rich([("· POSITIVO: ", True), ("Cualquier incremento de metano - CH4 mayor o igual a 10 ppm en cualquier punto de la gráfica.", False)]),
     ])
 
 
@@ -876,17 +876,20 @@ def _generar_informe_sibokit_pdf(muestra: Muestra, validacion_clinica: bool = Tr
     h2_corregido, ch4_corregido = _valores_corregidos_sibokit(valores)
     y = _dibujar_grafico_lactokit(pdf, 38, y, 134, 60, h2_corregido, ch4_corregido) + 1
     y = _dibujar_tabla_sibokit(pdf, 20, y, valores)
-    pdf.set_font("Helvetica", "BU", 8); pdf.set_xy(20, y); pdf.cell(170, 4, "VALORACIÓN DE LA PRUEBA"); y += 5
-    pdf.set_font("Helvetica", "", 7); pdf.set_xy(20, y); pdf.multi_cell(170, 3.4, resultado.descripcion.upper()); y = pdf.get_y() + 2
+    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 0, 0); pdf.set_xy(16, y)
+    pdf.cell(178, 4, "VALORACIÓN DE LA PRUEBA"); y += 7
+    pdf.set_font("Helvetica", "", 9); pdf.set_text_color(0, 0, 0); pdf.set_xy(16, y)
+    pdf.multi_cell(178, 4.2, resultado.descripcion.upper(), align="J"); y = pdf.get_y() + 4
     if resultado.nota_adicional:
-        pdf.set_font("Helvetica", "B", 6.5); pdf.set_xy(20, y); pdf.multi_cell(170, 3.2, resultado.nota_adicional); y = pdf.get_y() + 2
+        pdf.set_font("Helvetica", "B", 8.5); pdf.set_text_color(0, 0, 0); pdf.set_xy(16, y)
+        pdf.multi_cell(178, 4.2, resultado.nota_adicional, align="J"); y = pdf.get_y() + 4
     pdf.add_page()
     y = 24
-    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 70, 140); pdf.set_xy(16, y)
+    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 0, 0); pdf.set_xy(16, y)
     pdf.cell(178, 4, "INTERPRETACIÓN DE LA PRUEBA"); y += 7
-    y = _write_html_lactokit(pdf, 16, y, _referencias_sibokit_html(), font_size=8.5, paragraph_gap=1.6)
+    y = _write_html_lactokit(pdf, 16, y, _referencias_sibokit_html(), font_size=8.5, paragraph_gap=1.7)
     y += 8
-    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 70, 140); pdf.set_xy(16, y)
+    pdf.set_font("Helvetica", "BU", 10); pdf.set_text_color(0, 0, 0); pdf.set_xy(16, y)
     pdf.cell(178, 4, "NOTA:"); y += 7
     _write_html_lactokit(pdf, 16, y, _notas_sibokit_html(), font_size=8.5, paragraph_gap=2)
     if not validacion_clinica:
